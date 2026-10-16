@@ -4,6 +4,8 @@
 //! The window lists every DDC/CI monitor discovered by the active backend and
 //! lets you nudge each monitor's brightness up or down.
 
+mod cli;
+
 use std::sync::Arc;
 
 use gpui::{
@@ -217,6 +219,16 @@ fn control_button(
         .child(label)
 }
 
+/// The real backend, without the demo fallback.
+///
+/// Command-line use must report honest errors, so it never silently talks to the
+/// mock monitors.
+fn real_backend() -> Arc<dyn DdcBackend> {
+    Arc::new(DdcutilCli::new())
+}
+
+/// The GUI backend, which falls back to the demo monitor when `ddcutil` is
+/// missing so the window is still usable during development.
 fn make_backend() -> Arc<dyn DdcBackend> {
     let cli = DdcutilCli::new();
     if cli.is_available() {
@@ -227,6 +239,25 @@ fn make_backend() -> Arc<dyn DdcBackend> {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = match cli::parse(&args) {
+        Ok(command) => command,
+        Err(message) => {
+            eprintln!("ddcui-rs: {message}");
+            eprintln!("Try 'ddcui-rs --help' for more information.");
+            std::process::exit(2);
+        }
+    };
+
+    if command != cli::Command::Gui {
+        let backend = real_backend();
+        std::process::exit(cli::run(backend.as_ref(), &command));
+    }
+
+    run_gui();
+}
+
+fn run_gui() {
     let backend = make_backend();
 
     Application::new().run(move |cx: &mut App| {

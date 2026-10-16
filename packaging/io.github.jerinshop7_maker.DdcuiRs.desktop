@@ -10,3 +10,20 @@ TryExec=ddcui-rs
 Icon=io.github.jerinshop7_maker.DdcuiRs
 Terminal=false
 Categories=Settings;HardwareSettings;
+Actions=SetBrightness25;SetBrightness50;SetBrightness75;SetBrightness100;
+
+[Desktop Action SetBrightness25]
+Name=Set Brightness to 25%
+Exec=ddcui-rs --set-brightness 25
+
+[Desktop Action SetBrightness50]
+Name=Set Brightness to 50%
+Exec=ddcui-rs --set-brightness 50
+
+[Desktop Action SetBrightness75]
+Name=Set Brightness to 75%
+Exec=ddcui-rs --set-brightness 75
+
+[Desktop Action SetBrightness100]
+Name=Set Brightness to 100%
+Exec=ddcui-rs --set-brightness 100

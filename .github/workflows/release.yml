@@ -42,6 +42,13 @@ jobs:
             libvulkan-dev libssl-dev \
             dpkg-dev desktop-file-utils appstream
 
+      - name: Fetch appimagetool
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+
       - name: Resolve version
         id: ver
         run: |
@@ -53,6 +60,15 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release -p ddcui-gpui
+
+      - name: Report binary size
+        run: |
+          ls -lh target/release/ddcui-rs
+          echo "### Binary size" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh target/release/ddcui-rs >> "$GITHUB_STEP_SUMMARY"
+          file target/release/ddcui-rs >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate desktop file (informational)
         run: desktop-file-validate packaging/io.github.jerinshop7_maker.DdcuiRs.desktop || true
@@ -69,7 +85,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ddcui-rs-${{ steps.ver.outputs.version }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -77,11 +96,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
+          files=()
+          for f in dist/*.deb dist/*.tar.gz dist/*.AppImage; do
+            [ -e "$f" ] && files+=("$f")
+          done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no build artifacts found" >&2
+            exit 1
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            gh release upload "$TAG" "${files[@]}" --clobber
           else
-            gh release create "$TAG" dist/* \
+            target=()
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              target=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$TAG" "${files[@]}" \
               --title "ddcui-rs $TAG" \
-              --generate-notes \
-              --target "$GITHUB_SHA"
+              --generate-notes "${target[@]}"
           fi

@@ -65,4 +65,7 @@ jobs:
         run: cargo build -p ddcui-gpui --verbose
 
       - name: Clippy
-        run: cargo clippy -p ddcui-gpui -- -D warnings
+        run: cargo clippy -p ddcui-gpui --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p ddcui-gpui

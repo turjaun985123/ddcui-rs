@@ -16,8 +16,14 @@ gpui = "0.2.2"
 ddc-core = { path = "crates/ddc-core" }
 
 [profile.release]
-opt-level = 3
-lto = "thin"
+# Size-optimized release build (see docs/analysis.md). The shipped binary does
+# not need debug info or unwind tables, so strip them and optimize for size.
+opt-level = "s"        # optimize for size (use "z" for the last few KB)
+lto = "fat"            # whole-program LTO removes dead code across crates
+codegen-units = 1      # more inlining opportunities / smaller output
+panic = "abort"        # drop the unwinding machinery
+strip = "symbols"      # no symbol table in the shipped binary
+incremental = false
 
 # `xattr 0.2.3` (a transitive dependency) references `libc::ENOATTR`, which
 # libc removed on Linux/Android after 0.2.126. Patch it locally with a one-line

@@ -59,10 +59,33 @@ cargo run -p ddcui-gpui
 If the `ddcutil` executable is not found, the app falls back to a mock backend so
 the UI is still usable for development.
 
+## Command line
+
+The same binary also works headlessly, which is what the desktop *Quick Actions*
+use:
+
+```bash
+ddcui-rs --list                     # list monitors
+ddcui-rs --get-brightness           # print current brightness
+ddcui-rs --set-brightness 50        # set brightness to 50%
+ddcui-rs --set-brightness 20 --display 2
+ddcui-rs --help
+```
+
+Unlike the GUI, the command-line mode never falls back to the mock backend — if
+`ddcutil` is missing it reports the real error and exits non-zero.
+
 ## Install
 
 Prebuilt packages are published on the [Releases](https://github.com/jerinshop7-maker/ddcui-rs/releases)
 page:
+
+**AppImage (no install, one file)** — the easiest option:
+
+```bash
+chmod +x ddcui-rs-0.1.0-x86_64.AppImage
+./ddcui-rs-0.1.0-x86_64.AppImage            # just run it
+```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
@@ -78,12 +101,17 @@ cd ddcui-rs-0.1.0-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 
-Both install the `ddcui-rs` binary, a `.desktop` entry, an AppStream
-`metainfo.xml`, and hicolor icons in 16–256 px. The icon set is the upstream
-`ddcui` artwork from KDE Oxygen (LGPL-3.0; see `packaging/icons/COPYING`).
+Every package installs the `ddcui-rs` binary, a `.desktop` entry, an AppStream
+`metainfo.xml`, and hicolor icons in 16–256 px. The `.desktop` entry appears in
+the Activities/app-grid search and carries brightness **Quick Actions** (25/50/75/100 %),
+so you can right-click the launcher icon to set brightness without opening the
+window. The icon set is the upstream `ddcui` artwork from KDE Oxygen (LGPL-3.0;
+see `packaging/icons/COPYING`).
 
 Releases are built by `.github/workflows/release.yml` whenever a `v*` tag is
-pushed, or manually via *Actions → Release → Run workflow*.
+pushed, or manually via *Actions → Release → Run workflow*. The release profile is
+tuned for size (`opt-level = "s"`, fat LTO, `codegen-units = 1`, `panic = "abort"`,
+symbols stripped).
 
 ## Dependency patch
 
