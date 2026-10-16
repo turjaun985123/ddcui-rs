@@ -525,7 +525,22 @@ mod tests {
         let text = "['ding@rastersoft.com', 'ubuntu-dock@ubuntu.com']";
         let items = single_quoted_items(text);
         assert_eq!(items, vec!["ding@rastersoft.com", "ubuntu-dock@ubuntu.com"]);
-        assert_eq!(quoted(&items), text);
+        assert_eq!(format!("[{}]", quoted(&items)), text);
+
+        // Adding our uuid and removing it again keeps the list intact.
+        let mut ours = items.clone();
+        ours.push("ddcui-rs@jerinshop7-maker".to_string());
+        let rendered = format!("[{}]", quoted(&ours));
+        let back = single_quoted_items(&rendered);
+        assert_eq!(back, ours);
+
+        let mut kept: Vec<String> = Vec::new();
+        for item in back {
+            if !item.starts_with("ddcui") {
+                kept.push(item);
+            }
+        }
+        assert_eq!(kept, items);
     }
 
     #[test]
