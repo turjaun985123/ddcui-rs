@@ -125,12 +125,16 @@ fn take_value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&
 }
 
 fn parse_display(value: &str) -> Result<u32, String> {
-    value.parse().map_err(|_| format!("invalid monitor number: {value}"))
+    value
+        .parse()
+        .map_err(|_| format!("invalid monitor number: {value}"))
 }
 
 /// Parse a percentage, rejecting values outside `0..=100`.
 fn parse_percent(value: &str) -> Result<u8, String> {
-    let percent: u8 = value.parse().map_err(|_| format!("invalid percentage: {value}"))?;
+    let percent: u8 = value
+        .parse()
+        .map_err(|_| format!("invalid percentage: {value}"))?;
     if percent > 100 {
         return Err(format!("percentage out of range (0-100): {value}"));
     }
@@ -146,13 +150,19 @@ pub fn run(backend: &dyn DdcBackend, command: &Command) -> i32 {
         }
         Command::List => run_list(backend),
         Command::Get { feature, display } => run_get(backend, feature, display),
-        Command::Set { feature, percent, display } => run_set(backend, feature, percent, display),
+        Command::Set {
+            feature,
+            percent,
+            display,
+        } => run_set(backend, feature, percent, display),
     }
 }
 
 /// Resolve the monitors a command applies to.
 fn select(backend: &dyn DdcBackend, display: Option<u32>) -> Result<Vec<MonitorId>, String> {
-    let monitors = backend.detect().map_err(|err| format!("detection failed: {err}"))?;
+    let monitors = backend
+        .detect()
+        .map_err(|err| format!("detection failed: {err}"))?;
     if monitors.is_empty() {
         return Err(format!("{}: no DDC/CI monitors found", backend.name()));
     }
@@ -188,7 +198,10 @@ fn run_list(backend: &dyn DdcBackend) -> i32 {
     for monitor in &monitors {
         let brightness = brightness_label(backend, monitor);
         let label = monitor.label();
-        println!("  display {}  {label}  brightness {brightness}", monitor.display);
+        println!(
+            "  display {}  {label}  brightness {brightness}",
+            monitor.display
+        );
     }
     0
 }
