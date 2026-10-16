@@ -190,7 +190,11 @@ impl Render for AppState {
                     .gap_3()
                     .p_4()
                     .overflow_hidden()
-                    .children(indices.into_iter().map(|index| self.render_monitor(index, cx))),
+                    .children(
+                        indices
+                            .into_iter()
+                            .map(|index| self.render_monitor(index, cx)),
+                    ),
             )
             .child(self.render_status_bar())
     }
@@ -365,25 +369,15 @@ impl AppState {
     ) -> impl IntoElement {
         let mut row = div().flex().flex_row().gap_1();
         for preset in PRESETS {
-            row = row.child(self.preset_chip(monitor, feature, preset, cx));
+            let listener = cx.listener(
+                move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
+                    this.set_percent(monitor, feature, preset);
+                    cx.notify();
+                },
+            );
+            row = row.child(chip(preset.to_string(), listener));
         }
         row
-    }
-
-    fn preset_chip(
-        &self,
-        monitor: usize,
-        feature: usize,
-        preset: u8,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let listener = cx.listener(
-            move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
-                this.set_percent(monitor, feature, preset);
-                cx.notify();
-            },
-        );
-        chip(preset.to_string(), listener)
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
