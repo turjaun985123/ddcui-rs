@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jerinshop7_maker.DdcuiRs</id>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+
+  <name>ddcui-rs</name>
+  <summary>Control external monitor settings via DDC/CI</summary>
+
+  <description>
+    <p>
+      ddcui-rs is a Rust and GPUI reimplementation of ddcui. It communicates
+      with a monitor's Virtual Control Panel (VCP) over DDC/CI to read and
+      change settings such as brightness and contrast — the same settings and
+      information exposed by the monitor's on-screen display.
+    </p>
+    <p>
+      It drives the ddcutil command line program, which talks to the monitor
+      over a /dev/i2c device exposed by the video driver. DDC/CI must be enabled
+      in the monitor's own menu, and the user needs access to the i2c devices.
+    </p>
+    <p>
+      This is an early port; not all features of the original ddcui are
+      implemented yet.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.jerinshop7_maker.DdcuiRs.desktop</launchable>
+
+  <url type="homepage">https://github.com/jerinshop7-maker/ddcui-rs</url>
+  <url type="bugtracker">https://github.com/jerinshop7-maker/ddcui-rs/issues</url>
+
+  <developer_name>ddcui-rs contributors</developer_name>
+  <update_contact>jerinshop7-maker@users.noreply.github.com</update_contact>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-16"/>
+  </releases>
+</component>

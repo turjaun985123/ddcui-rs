@@ -59,6 +59,32 @@ cargo run -p ddcui-gpui
 If the `ddcutil` executable is not found, the app falls back to a mock backend so
 the UI is still usable for development.
 
+## Install
+
+Prebuilt packages are published on the [Releases](https://github.com/jerinshop7-maker/ddcui-rs/releases)
+page:
+
+**Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
+
+```bash
+sudo apt install ./ddcui-rs_0.1.0_amd64.deb
+```
+
+**Any Linux (tarball):**
+
+```bash
+tar xzf ddcui-rs-0.1.0-x86_64-linux.tar.gz
+cd ddcui-rs-0.1.0-x86_64-linux
+sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
+```
+
+Both install the `ddcui-rs` binary, a `.desktop` entry, an AppStream
+`metainfo.xml`, and hicolor icons in 16–256 px. The icon set is the upstream
+`ddcui` artwork from KDE Oxygen (LGPL-3.0; see `packaging/icons/COPYING`).
+
+Releases are built by `.github/workflows/release.yml` whenever a `v*` tag is
+pushed, or manually via *Actions → Release → Run workflow*.
+
 ## Dependency patch
 
 `xattr 0.2.3` (pulled in transitively by the GPUI dependency tree) references

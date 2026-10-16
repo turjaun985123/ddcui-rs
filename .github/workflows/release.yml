@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: build .deb + tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev \
+            libxcb-randr0-dev libxcb-shm0-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libvulkan-dev libssl-dev \
+            dpkg-dev desktop-file-utils appstream
+
+      - name: Resolve version
+        id: ver
+        run: |
+          ref="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          version="${ref#v}"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${version}"
+
+      - name: Build release binary
+        run: cargo build --release -p ddcui-gpui
+
+      - name: Validate desktop file (informational)
+        run: desktop-file-validate packaging/io.github.jerinshop7_maker.DdcuiRs.desktop || true
+
+      - name: Validate metainfo (informational)
+        run: appstreamcli validate --no-net packaging/io.github.jerinshop7_maker.DdcuiRs.metainfo.xml || true
+
+      - name: Build packages
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: bash packaging/build-packages.sh "$VERSION"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddcui-rs-${{ steps.ver.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "ddcui-rs $TAG" \
+              --generate-notes \
+              --target "$GITHUB_SHA"
+          fi

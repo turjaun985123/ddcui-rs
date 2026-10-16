@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.1
+Name=ddcui-rs
+GenericName=Monitor Settings
+Comment=Control external monitor brightness and other DDC/CI settings
+Keywords=ddcutil;DDC/CI;MCCS;monitor;brightness;contrast;
+Exec=ddcui-rs
+TryExec=ddcui-rs
+Icon=io.github.jerinshop7_maker.DdcuiRs
+Terminal=false
+Categories=Settings;HardwareSettings;
