@@ -164,21 +164,21 @@ page:
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.4.0-x86_64.AppImage
-./ddcui-rs-0.4.0-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.4.1-x86_64.AppImage
+./ddcui-rs-0.4.1-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.4.0_amd64.deb
+sudo apt install ./ddcui-rs_0.4.1_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.4.0-x86_64-linux.tar.gz
-cd ddcui-rs-0.4.0-x86_64-linux
+tar xzf ddcui-rs-0.4.1-x86_64-linux.tar.gz
+cd ddcui-rs-0.4.1-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 

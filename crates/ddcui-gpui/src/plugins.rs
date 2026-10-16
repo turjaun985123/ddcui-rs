@@ -147,17 +147,57 @@ pub struct Discovery {
 
 /// Directories that are searched for plugins, highest priority first.
 pub fn search_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    search_entries().into_iter().map(|(dir, _)| dir).collect()
+}
+
+/// The same list, each directory with the trust level that belongs to it.
+///
+/// A directory is listed once even when two rules name it: with a per-user
+/// install (`PREFIX=$HOME/.local`) the bundled plugins live in exactly the
+/// directory that would otherwise be the user's own drop-in directory.
+fn search_entries() -> Vec<(PathBuf, Origin)> {
+    let bundled = next_to_executable();
+    let mut entries = Vec::new();
 
     if let Some(from_env) = std::env::var_os("DDCUI_PLUGIN_PATH") {
-        paths.extend(std::env::split_paths(&from_env));
+        for dir in std::env::split_paths(&from_env) {
+            push_once(&mut entries, dir, Origin::Environment);
+        }
     }
     if let Some(data) = data_home() {
-        paths.push(data.join("ddcui-rs").join("plugins"));
+        let dir = data.join("ddcui-rs").join("plugins");
+        let origin = user_dir_origin(&dir, &bundled);
+        push_once(&mut entries, dir, origin);
     }
-    paths.extend(next_to_executable());
-    paths.push(PathBuf::from("/usr/share/ddcui-rs/plugins"));
-    paths
+    for dir in bundled {
+        push_once(&mut entries, dir, Origin::Bundled);
+    }
+    push_once(
+        &mut entries,
+        PathBuf::from("/usr/share/ddcui-rs/plugins"),
+        Origin::Bundled,
+    );
+    entries
+}
+
+/// Add `dir` unless something above it already claimed that directory.
+fn push_once(entries: &mut Vec<(PathBuf, Origin)>, dir: PathBuf, origin: Origin) {
+    if !entries.iter().any(|(known, _)| *known == dir) {
+        entries.push((dir, origin));
+    }
+}
+
+/// The trust that belongs to the user's own plugin directory.
+///
+/// A per-user install puts the shipped plugins in that very directory, so it
+/// only counts as somebody else's files when it is not one of the directories
+/// that follow the executable.
+fn user_dir_origin(user_dir: &Path, bundled: &[PathBuf]) -> Origin {
+    if bundled.iter().any(|known| known == user_dir) {
+        Origin::Bundled
+    } else {
+        Origin::User
+    }
 }
 
 /// `$XDG_DATA_HOME`, or the conventional `~/.local/share`.
@@ -187,27 +227,11 @@ fn next_to_executable() -> Vec<PathBuf> {
     dirs
 }
 
-/// How much a plugin found in `dir` is trusted.
-fn origin_of(dir: &Path) -> Origin {
-    if let Some(from_env) = std::env::var_os("DDCUI_PLUGIN_PATH") {
-        let named = std::env::split_paths(&from_env).any(|entry| entry.as_path() == dir);
-        if named {
-            return Origin::Environment;
-        }
-    }
-    if let Some(data) = data_home() {
-        if dir.starts_with(data.join("ddcui-rs").join("plugins")) {
-            return Origin::User;
-        }
-    }
-    Origin::Bundled
-}
-
 /// Every plugin on the search path, sorted by id.
 pub fn discover() -> Discovery {
     let mut found = Discovery::default();
 
-    for dir in search_paths() {
+    for (dir, origin) in search_entries() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -247,7 +271,7 @@ pub fn discover() -> Discovery {
             found.plugins.push(Plugin {
                 manifest,
                 dir: plugin_dir,
-                origin: origin_of(&dir),
+                origin,
             });
         }
     }
@@ -435,7 +459,10 @@ pub fn install(plugin: &Plugin) -> Result<Vec<String>, String> {
 
 /// Enable an extension, falling back to the setting the shell reads.
 fn enable_extension(uuid: &str) -> String {
-    if run_tool("gnome-extensions", &["enable", uuid]).is_ok() {
+    // `gnome-extensions` only lists what the running shell scanned at start-up,
+    // so a fresh install would answer "Extension ... does not exist"; write the
+    // setting directly in that case instead of printing that at the user.
+    if shell_knows(uuid) && run_tool("gnome-extensions", &["enable", uuid]).is_ok() {
         return format!("enabled {uuid}");
     }
     match enable_setting(uuid) {
@@ -455,7 +482,7 @@ pub fn uninstall(plugin: &Plugin) -> Result<Vec<String>, String> {
     let target = install_target(plugin)?;
 
     let mut steps = Vec::new();
-    if run_tool("gnome-extensions", &["disable", &uuid]).is_ok() {
+    if shell_knows(&uuid) && run_tool("gnome-extensions", &["disable", &uuid]).is_ok() {
         steps.push(format!("disabled {uuid}"));
     }
     if disable_setting(&uuid).is_ok() {
@@ -966,6 +993,44 @@ mod tests {
         assert!(!is_plain_name(""));
         assert!(!is_plain_name(".hidden"));
         assert!(!is_plain_name("with space"));
+    }
+
+    #[test]
+    fn the_plugin_search_path_lists_every_directory_once() {
+        let paths = search_paths();
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for path in &paths {
+            assert!(!seen.contains(path), "{} is listed twice", path.display());
+            seen.push(path.clone());
+        }
+    }
+
+    #[test]
+    fn plugins_next_to_the_program_are_trusted() {
+        let bundled = next_to_executable();
+        assert!(!bundled.is_empty(), "the executable has no directory");
+        let entries = search_entries();
+        for dir in bundled {
+            let origin = entries
+                .iter()
+                .find(|(known, _)| *known == dir)
+                .map(|(_, origin)| *origin)
+                .unwrap_or_else(|| panic!("{} is not on the search path", dir.display()));
+            assert_eq!(origin, Origin::Bundled, "{}", dir.display());
+        }
+    }
+
+    #[test]
+    fn a_per_user_install_is_not_somebody_elses_files() {
+        let dir = PathBuf::from("/home/someone/.local/share/ddcui-rs/plugins");
+        let bundled = vec![
+            PathBuf::from("/home/someone/.local/bin/plugins"),
+            dir.clone(),
+        ];
+        // `PREFIX=$HOME/.local` puts the shipped plugins here, so they are
+        // trusted; anywhere else this directory is the user's own drop-ins.
+        assert_eq!(user_dir_origin(&dir, &bundled), Origin::Bundled);
+        assert_eq!(user_dir_origin(&dir, &[]), Origin::User);
     }
 
     #[test]

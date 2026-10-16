@@ -1260,7 +1260,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "ddc-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "ddcui-gpui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ddc-core",
  "gpui",
