@@ -359,10 +359,26 @@ Display 2
         );
     }
 
+    /// Serializes the tests that create a fake command and run it.
+    ///
+    /// Executing a file that some other thread has open for writing fails with
+    /// `ETXTBSY`, and every one of these tests writes a script before spawning
+    /// it, so they take this lock for their whole body: that way no test forks
+    /// while another test still has a script open for writing.
+    fn spawn_guard() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = GUARD.get_or_init(|| Mutex::new(()));
+        // A test that panicked while holding the lock must not stop the rest.
+        guard.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
     /// Write an executable stand-in for `ddcutil` and return its path.
     ///
     /// The script body is run with `/bin/sh`, so it can log its arguments and
-    /// produce whatever output the test needs.
+    /// produce whatever output the test needs. Callers hold [`spawn_guard`]
+    /// while they use it.
     fn fake_ddcutil(name: &str, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
@@ -370,16 +386,9 @@ Display 2
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Write to a temporary name and rename it into place: tests run in
-        // parallel, and a child process that inherits the write descriptor
-        // between fork and exec makes executing the file fail with ETXTBSY.
-        // After the rename the descriptor points at an unreachable inode.
-        let temp = dir.join("ddcutil.tmp");
-        std::fs::write(&temp, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755)).unwrap();
-
         let path = dir.join("ddcutil");
-        std::fs::rename(&temp, &path).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
 
@@ -396,6 +405,7 @@ Display 2
 
     #[test]
     fn detect_reads_monitors_from_the_command() {
+        let _guard = spawn_guard();
         let path = fake_ddcutil("detect-ok", &format!("cat <<'EOF'\n{DETECT_OUTPUT}\nEOF"));
         let backend = DdcutilCli::with_program(path.to_string_lossy().to_string());
 
@@ -407,6 +417,7 @@ Display 2
 
     #[test]
     fn get_vcp_asks_for_the_right_display() {
+        let _guard = spawn_guard();
         let log = log_path("getvcp-args");
         let body = format!(
             "echo \"$*\" >> {log}\ncat <<'EOF'\nVCP 10 C 42 100\nEOF",
@@ -433,6 +444,7 @@ Display 2
 
     #[test]
     fn set_vcp_passes_the_value_through() {
+        let _guard = spawn_guard();
         let log = log_path("setvcp-args");
         let body = format!("echo \"$*\" >> {log}", log = log.display());
         let path = fake_ddcutil("setvcp-args", &body);
@@ -454,6 +466,7 @@ Display 2
 
     #[test]
     fn a_failing_command_reports_its_error_text() {
+        let _guard = spawn_guard();
         let body = "echo 'monitor is switched off' >&2\nexit 3";
         let path = fake_ddcutil("failing", body);
         let backend = DdcutilCli::with_program(path.to_string_lossy().to_string());
@@ -470,6 +483,7 @@ Display 2
 
     #[test]
     fn a_silent_failure_still_says_something() {
+        let _guard = spawn_guard();
         let path = fake_ddcutil("silent-failure", "exit 1");
         let backend = DdcutilCli::with_program(path.to_string_lossy().to_string());
 
@@ -479,6 +493,7 @@ Display 2
 
     #[test]
     fn a_hanging_command_is_killed() {
+        let _guard = spawn_guard();
         let path = fake_ddcutil("hanging", "sleep 30");
         let backend = DdcutilCli::with_program(path.to_string_lossy().to_string())
             .with_timeout(Duration::from_millis(250));
@@ -493,6 +508,9 @@ Display 2
 
     #[test]
     fn a_missing_program_is_unavailable() {
+        // Still takes the guard: a failed spawn forks too, and the child
+        // inherits any descriptor another test has open for writing.
+        let _guard = spawn_guard();
         let backend = DdcutilCli::with_program("/nonexistent/ddcutil");
         assert!(!backend.is_available());
 
@@ -502,8 +520,20 @@ Display 2
 
     #[test]
     fn a_present_program_is_available() {
+        let _guard = spawn_guard();
         let path = fake_ddcutil("available", "exit 0");
         let backend = DdcutilCli::with_program(path.to_string_lossy().to_string());
-        assert!(backend.is_available());
+        // Executing a file that some process still has open for writing fails
+        // with ETXTBSY for a moment; the guard above prevents that here, and
+        // these retries keep a stray fork elsewhere from turning into a flake.
+        let mut error = None;
+        for _ in 0..20 {
+            if backend.is_available() {
+                return;
+            }
+            error = backend.run(&["--version"]).err();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("{} should be usable: {error:?}", path.display());
     }
 }
