@@ -27,6 +27,10 @@ CI. See `docs/` and the tracking issues for the parity roadmap.
   `$XDG_CONFIG_HOME/ddcui-rs/profiles.json`.
 * A draggable title bar with working minimise/close buttons, a refresh button,
   and a status bar that reports the result of every action.
+* **Desktop plugins**: the same binary installs its desktop integrations, so
+  there is nothing else to download. `ddcui-rs --plugin-install gnome-quick-menu`
+  puts a **brightness button in the GNOME Quick Settings menu** (the top-right
+  menu with the power off button) with the presets saved in the window.
 
 ## Workspace layout
 
@@ -81,11 +85,41 @@ ddcui-rs --list                     # list monitors
 ddcui-rs --get-brightness           # print current brightness
 ddcui-rs --set-brightness 50        # set brightness to 50%
 ddcui-rs --set-brightness 20 --display 2
+ddcui-rs --plugin-list              # list the desktop plugins
+ddcui-rs --plugin-install gnome-quick-menu
 ddcui-rs --help
 ```
 
 Unlike the GUI, the command-line mode never falls back to the mock backend — if
 `ddcutil` is missing it reports the real error and exits non-zero.
+
+## Plugins
+
+A plugin is a directory with a `plugin.json` manifest and the files it installs,
+so integrations can be added, removed or written by hand without touching the
+binary. `ddcui-rs --plugin-list` shows what is available and
+`ddcui-rs --plugin-uninstall <id>` takes it away again. Plugins are looked for in
+
+1. `$DDCUI_PLUGIN_PATH` (colon separated),
+2. `~/.local/share/ddcui-rs/plugins` (drop your own in here),
+3. `plugins/` next to the binary and `../share/ddcui-rs/plugins` beside it
+   (where the tarball, AppImage and `/usr/local` layouts put them), and
+4. `/usr/share/ddcui-rs/plugins` (the `.deb`).
+
+The bundled plugin is **`gnome-quick-menu`** (GNOME Shell 45–50). It adds a
+`ddcui` cell to the Quick Settings menu — the menu that holds the power off
+button — with the brightness of the first monitor in its subtitle, brightness
+presets from 0 % to 100 %, the presets saved in the window, and an item that
+opens the app. The extension is a thin front end: it runs the `ddcui-rs`
+command, so the DDC/CI logic stays in one place.
+
+```bash
+ddcui-rs --plugin-install gnome-quick-menu
+```
+
+GNOME Shell only scans for new extensions when it starts, so sign out and back in
+once after the first install; the extension already comes up enabled. The menu
+button then appears without any further setup.
 
 ## Install
 
@@ -95,26 +129,27 @@ page:
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.2.0-x86_64.AppImage
-./ddcui-rs-0.2.0-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.3.0-x86_64.AppImage
+./ddcui-rs-0.3.0-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.2.0_amd64.deb
+sudo apt install ./ddcui-rs_0.3.0_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.2.0-x86_64-linux.tar.gz
-cd ddcui-rs-0.2.0-x86_64-linux
+tar xzf ddcui-rs-0.3.0-x86_64-linux.tar.gz
+cd ddcui-rs-0.3.0-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 
 Every package installs the `ddcui-rs` binary, a `.desktop` entry, an AppStream
-`metainfo.xml`, and hicolor icons in 16–256 px. The `.desktop` entry appears in
+`metainfo.xml`, hicolor icons in 16–256 px, and the plugin files (so
+`--plugin-install` works offline). The `.desktop` entry appears in
 the Activities/app-grid search and carries brightness **Quick Actions** (25/50/75/100 %),
 so you can right-click the launcher icon to set brightness without opening the
 window. The icon set is the upstream `ddcui` artwork from KDE Oxygen (LGPL-3.0;

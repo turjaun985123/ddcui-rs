@@ -38,6 +38,9 @@ for size in 16 32 48 64 128 256; do
 done
 install -m 0644 "$ROOT/packaging/icons/COPYING" "$stage/icons/COPYING"
 
+# Desktop integrations; the binary finds them in ./plugins next to itself.
+cp -r "$ROOT/packaging/plugins" "$stage/plugins"
+
 tar -C "$DIST" -czf "$DIST/$name.tar.gz" "$name"
 
 # ---------- .deb ----------
@@ -46,11 +49,13 @@ mkdir -p "$deb/DEBIAN" \
          "$deb/usr/bin" \
          "$deb/usr/share/applications" \
          "$deb/usr/share/metainfo" \
+         "$deb/usr/share/ddcui-rs" \
          "$deb/usr/share/doc/ddcui-rs"
 
 install -m 0755 "$BIN" "$deb/usr/bin/ddcui-rs"
 install -m 0644 "$ROOT/packaging/$APP_ID.desktop" "$deb/usr/share/applications/"
 install -m 0644 "$ROOT/packaging/$APP_ID.metainfo.xml" "$deb/usr/share/metainfo/"
+cp -r "$ROOT/packaging/plugins" "$deb/usr/share/ddcui-rs/plugins"
 for size in 16 32 48 64 128 256; do
   dir="$deb/usr/share/icons/hicolor/${size}x${size}/apps"
   mkdir -p "$dir"
@@ -69,11 +74,13 @@ rm -rf "$appdir"
 mkdir -p "$appdir/usr/bin" \
          "$appdir/usr/share/applications" \
          "$appdir/usr/share/metainfo" \
+         "$appdir/usr/share/ddcui-rs" \
          "$appdir/usr/share/icons/hicolor/256x256/apps"
 
 install -m 0755 "$BIN" "$appdir/usr/bin/ddcui-rs"
 install -m 0644 "$ROOT/packaging/$APP_ID.desktop" "$appdir/usr/share/applications/"
 install -m 0644 "$ROOT/packaging/$APP_ID.metainfo.xml" "$appdir/usr/share/metainfo/"
+cp -r "$ROOT/packaging/plugins" "$appdir/usr/share/ddcui-rs/plugins"
 install -m 0644 "$ROOT/packaging/icons/video-display-256px.png" \
   "$appdir/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
 

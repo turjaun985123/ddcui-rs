@@ -69,3 +69,37 @@ jobs:
 
       - name: Test
         run: cargo test -p ddcui-gpui
+
+  plugins:
+    name: desktop plugins (syntax)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # GJS only exists inside a GNOME Shell session, but the extension is
+      # plain ESM: `node --check` catches syntax errors, and the manifests are
+      # validated below as well as by `cargo test -p ddcui-gpui`.
+      - name: GNOME Shell extension parses
+        run: |
+          set -euo pipefail
+          cp packaging/plugins/gnome-quick-menu/files/extension.js /tmp/extension.mjs
+          node --check /tmp/extension.mjs
+          echo "extension.js parses as an ES module"
+
+      - name: Manifests agree with each other
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("packaging/plugins/gnome-quick-menu")
+          plugin = json.loads((root / "plugin.json").read_text())
+          metadata = json.loads((root / "files" / "metadata.json").read_text())
+
+          assert plugin["kind"] == "gnome-shell-extension", plugin
+          assert plugin["uuid"] == metadata["uuid"], "uuid mismatch"
+          assert "50" in metadata["shell-version"], metadata["shell-version"]
+          for name in ("extension.js", "metadata.json"):
+              assert (root / plugin.get("files", "files") / name).is_file(), name
+          print(f"{plugin['id']}: {plugin['uuid']}, shell-version {metadata['shell-version']}")
+          PY

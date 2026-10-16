@@ -4,11 +4,16 @@
 //! the desktop "Quick Actions" (`packaging/*.desktop`), so brightness can be
 //! changed from the launcher's right-click menu without opening a window, and
 //! they make the binary scriptable from a terminal or a shell script.
+//!
+//! The `--plugin-*` flags manage the desktop integrations described in
+//! [`crate::plugins`], such as the GNOME Quick Settings button.
 
 use ddc_core::{DdcBackend, MonitorId, VcpCode, VcpValue};
 
+use crate::plugins;
+
 /// What the process was asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Open the GUI (the default when no arguments are given).
     Gui,
@@ -32,6 +37,12 @@ pub enum Command {
         /// Restrict to a single 1-based display number.
         display: Option<u32>,
     },
+    /// List the plugins that are available.
+    PluginList,
+    /// Install a plugin by id.
+    PluginInstall(String),
+    /// Remove an installed plugin by id.
+    PluginUninstall(String),
 }
 
 /// Usage text shown by `--help`.
@@ -49,6 +60,9 @@ COMMANDS:
     --set-brightness <0-100>  Set brightness as a percentage
     --get-contrast            Print the contrast of each monitor
     --set-contrast <0-100>    Set contrast as a percentage
+    --plugin-list             List the available plugins
+    --plugin-install <id>     Install a plugin (for example gnome-quick-menu)
+    --plugin-uninstall <id>   Remove an installed plugin
     -h, --help                Print this help
 
 OPTIONS:
@@ -83,6 +97,15 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 let text = take_value(args, &mut index, "--set-contrast")?;
                 let percent = parse_percent(text)?;
                 command = Some(set_command(VcpCode::CONTRAST, percent));
+            }
+            "--plugin-list" => command = Some(Command::PluginList),
+            "--plugin-install" => {
+                let text = take_value(args, &mut index, "--plugin-install")?;
+                command = Some(Command::PluginInstall(text.to_string()));
+            }
+            "--plugin-uninstall" => {
+                let text = take_value(args, &mut index, "--plugin-uninstall")?;
+                command = Some(Command::PluginUninstall(text.to_string()));
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -143,18 +166,21 @@ fn parse_percent(value: &str) -> Result<u8, String> {
 
 /// Run a non-GUI command, returning the process exit code.
 pub fn run(backend: &dyn DdcBackend, command: &Command) -> i32 {
-    match *command {
+    match command {
         Command::Help | Command::Gui => {
             print!("{HELP}");
             0
         }
         Command::List => run_list(backend),
-        Command::Get { feature, display } => run_get(backend, feature, display),
+        Command::Get { feature, display } => run_get(backend, *feature, *display),
         Command::Set {
             feature,
             percent,
             display,
-        } => run_set(backend, feature, percent, display),
+        } => run_set(backend, *feature, *percent, *display),
+        Command::PluginList => plugins::run_list(),
+        Command::PluginInstall(id) => plugins::run_install(id),
+        Command::PluginUninstall(id) => plugins::run_uninstall(id),
     }
 }
 
@@ -318,6 +344,26 @@ mod tests {
     #[test]
     fn rejects_unknown_argument() {
         assert!(parse(&args(&["--nope"])).is_err());
+    }
+
+    #[test]
+    fn parses_plugin_commands() {
+        let list = parse(&args(&["--plugin-list"])).unwrap();
+        assert_eq!(list, Command::PluginList);
+
+        let install = parse(&args(&["--plugin-install", "gnome-quick-menu"])).unwrap();
+        let expected = Command::PluginInstall("gnome-quick-menu".to_string());
+        assert_eq!(install, expected);
+
+        let remove = parse(&args(&["--plugin-uninstall", "gnome-quick-menu"])).unwrap();
+        let expected = Command::PluginUninstall("gnome-quick-menu".to_string());
+        assert_eq!(remove, expected);
+    }
+
+    #[test]
+    fn plugin_flags_need_a_value() {
+        assert!(parse(&args(&["--plugin-install"])).is_err());
+        assert!(parse(&args(&["--plugin-uninstall"])).is_err());
     }
 
     #[test]

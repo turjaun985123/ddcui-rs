@@ -4,9 +4,12 @@
 //! The window lists every DDC/CI monitor discovered by the active backend and
 //! lets you read and change its continuous VCP features (brightness, contrast)
 //! with a clickable level bar, stepper buttons, quick-set percentages and saved
-//! brightness/contrast presets.
+//! brightness/contrast presets. The same binary is a headless command line
+//! (`--list`, `--set-brightness`, ...) and installs desktop integrations with
+//! `--plugin-install`.
 
 mod cli;
+mod plugins;
 
 use std::path::PathBuf;
 use std::sync::Arc;

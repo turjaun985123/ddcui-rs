@@ -1,0 +1,8 @@
+{
+    "id": "gnome-quick-menu",
+    "name": "GNOME Quick Settings button",
+    "summary": "A ddcui button with brightness presets in the Quick Settings menu, next to the power off button.",
+    "kind": "gnome-shell-extension",
+    "uuid": "ddcui-rs@jerinshop7-maker",
+    "files": "files"
+}

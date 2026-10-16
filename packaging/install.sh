@@ -25,6 +25,13 @@ for size in 16 32 48 64 128 256; do
     "share/icons/hicolor/${size}x${size}/apps/$APP_ID.png" 0644
 done
 
+# Desktop integrations (GNOME Quick Settings button, ...).
+if [ -d "$here/plugins" ]; then
+  mkdir -p "$DESTDIR$PREFIX/share/ddcui-rs"
+  rm -rf "$DESTDIR$PREFIX/share/ddcui-rs/plugins"
+  cp -r "$here/plugins" "$DESTDIR$PREFIX/share/ddcui-rs/plugins"
+fi
+
 # Refresh the desktop/icon caches when installing on a live system.
 if [ -z "$DESTDIR" ] && command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$PREFIX/share/applications" || true
@@ -35,3 +42,4 @@ fi
 
 echo "Installed ddcui-rs into $DESTDIR$PREFIX"
 echo "Run 'ddcui-rs' (ensure the 'ddcutil' program is installed and /dev/i2c-* is accessible)."
+echo "Desktop integrations: 'ddcui-rs --plugin-list' and 'ddcui-rs --plugin-install gnome-quick-menu'."

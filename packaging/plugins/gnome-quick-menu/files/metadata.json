@@ -1,0 +1,15 @@
+{
+    "uuid": "ddcui-rs@jerinshop7-maker",
+    "name": "ddcui-rs Monitor Brightness",
+    "description": "Control external monitor brightness from the Quick Settings menu, next to the power off button. Adds brightness presets and the presets saved in the ddcui-rs window. Needs the ddcui-rs command.",
+    "shell-version": [
+        "45",
+        "46",
+        "47",
+        "48",
+        "49",
+        "50"
+    ],
+    "url": "https://github.com/jerinshop7-maker/ddcui-rs",
+    "version-name": "0.3.0"
+}
