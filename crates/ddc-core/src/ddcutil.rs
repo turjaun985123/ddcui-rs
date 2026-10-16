@@ -128,15 +128,15 @@ pub fn parse_detect(output: &str) -> Vec<MonitorId> {
         };
 
         if let Some(value) = line.strip_prefix("I2C bus:") {
-            monitor.bus = Some(value.trim().to_string());
+            set_value(&mut monitor.bus, value);
         } else if let Some(value) = line.strip_prefix("DRM connector:") {
-            monitor.connector = Some(value.trim().to_string());
+            set_value(&mut monitor.connector, value);
         } else if let Some(value) = line.strip_prefix("Mfg id:") {
             apply_mfg_id(monitor, value);
         } else if let Some(value) = line.strip_prefix("Model:") {
-            fill_if_empty(&mut monitor.model, value);
+            set_value(&mut monitor.model, value);
         } else if let Some(value) = line.strip_prefix("Serial number:") {
-            fill_if_empty(&mut monitor.serial, value);
+            set_value(&mut monitor.serial, value);
         }
     }
 
@@ -147,19 +147,27 @@ fn apply_mfg_id(monitor: &mut MonitorId, value: &str) {
     let value = value.trim();
     match value.split_once(" - ") {
         Some((manufacturer, model)) => {
-            if !manufacturer.trim().is_empty() {
-                monitor.manufacturer = Some(manufacturer.trim().to_string());
-            }
+            set_value(&mut monitor.manufacturer, manufacturer);
+            // The text after " - " is a human-readable name; it is only a
+            // fallback for monitors that do not report a separate "Model:" line.
             fill_if_empty(&mut monitor.model, model);
         }
-        None => fill_if_empty(&mut monitor.manufacturer, value),
+        None => set_value(&mut monitor.manufacturer, value),
     }
 }
 
-fn fill_if_empty(slot: &mut Option<String>, value: &str) {
+/// Set `slot` to `value` when `value` is non-empty. Later sources win.
+fn set_value(slot: &mut Option<String>, value: &str) {
     let value = value.trim();
-    if slot.is_none() && !value.is_empty() {
+    if !value.is_empty() {
         *slot = Some(value.to_string());
+    }
+}
+
+/// Set `slot` only if it is still empty (lower-priority source).
+fn fill_if_empty(slot: &mut Option<String>, value: &str) {
+    if slot.is_none() {
+        set_value(slot, value);
     }
 }
 
