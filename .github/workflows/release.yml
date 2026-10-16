@@ -110,16 +110,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Listing and help output go to files first: `grep -q` and `head`
+          # stop reading early, and under `pipefail` the writer's SIGPIPE would
+          # then fail the step.
           deb="dist/ddcui-rs_${VERSION}_amd64.deb"
           test -f "$deb"
-          dpkg-deb --contents "$deb" | grep -q './usr/bin/ddcui-rs'
-          dpkg-deb --contents "$deb" | grep -q './usr/share/ddcui-rs/plugins/gnome-quick-menu/plugin.json'
+          dpkg-deb --contents "$deb" > "$RUNNER_TEMP/deb-contents.txt"
+          grep -q './usr/bin/ddcui-rs$' "$RUNNER_TEMP/deb-contents.txt"
+          grep -q './usr/share/ddcui-rs/plugins/gnome-quick-menu/plugin.json$' \
+            "$RUNNER_TEMP/deb-contents.txt"
+          grep -q './usr/share/applications/io.github.jerinshop7_maker.DdcuiRs.desktop$' \
+            "$RUNNER_TEMP/deb-contents.txt"
 
           tarball="dist/ddcui-rs-${VERSION}-x86_64-linux.tar.gz"
           test -f "$tarball"
           root="ddcui-rs-${VERSION}-x86_64-linux"
-          tar tzf "$tarball" | grep -q "^${root}/ddcui-rs$"
-          tar tzf "$tarball" | grep -q "^${root}/plugins/gnome-quick-menu/plugin.json$"
+          tar tzf "$tarball" > "$RUNNER_TEMP/tarball-contents.txt"
+          grep -q "^${root}/ddcui-rs$" "$RUNNER_TEMP/tarball-contents.txt"
+          grep -q "^${root}/plugins/gnome-quick-menu/plugin.json$" "$RUNNER_TEMP/tarball-contents.txt"
+          grep -q "^${root}/install.sh$" "$RUNNER_TEMP/tarball-contents.txt"
 
           appimage="dist/ddcui-rs-${VERSION}-x86_64.AppImage"
           test -f "$appimage"
@@ -127,8 +136,11 @@ jobs:
           # The shipped binaries have to run: `--help` prints without a display.
           mkdir -p "$RUNNER_TEMP/check"
           tar xzf "$tarball" -C "$RUNNER_TEMP/check"
-          "$RUNNER_TEMP/check/$root/ddcui-rs" --help | head -5
-          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --help | head -5
+          "$RUNNER_TEMP/check/$root/ddcui-rs" --help > "$RUNNER_TEMP/tarball-help.txt"
+          grep -q 'ddcui-rs' "$RUNNER_TEMP/tarball-help.txt"
+
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --help > "$RUNNER_TEMP/appimage-help.txt"
+          grep -q 'ddcui-rs' "$RUNNER_TEMP/appimage-help.txt"
 
           echo "All three artifacts unpack and run"
 
