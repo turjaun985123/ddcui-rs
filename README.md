@@ -1,5 +1,7 @@
 # ddcui-rs
 
+[![CI](https://github.com/jerinshop7-maker/ddcui-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jerinshop7-maker/ddcui-rs/actions/workflows/ci.yml)
+
 A Rust + [GPUI](https://gpui.rs) port of [`ddcui`](https://github.com/rockowitz/ddcui) —
 a GUI for controlling external monitors over **DDC/CI** (brightness, contrast, and
 other MCCS VCP features).
