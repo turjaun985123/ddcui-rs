@@ -452,7 +452,12 @@ impl AppState {
                 .flex_row()
                 .items_center()
                 .gap_3()
-                .child(div().w(px(NAME_WIDTH)).text_color(rgb(TEXT_DIM)).child(name))
+                .child(
+                    div()
+                        .w(px(NAME_WIDTH))
+                        .text_color(rgb(TEXT_DIM))
+                        .child(name),
+                )
                 .child(
                     div()
                         .text_size(px(12.0))
@@ -491,7 +496,12 @@ impl AppState {
             .flex_row()
             .items_center()
             .gap_3()
-            .child(div().w(px(NAME_WIDTH)).text_color(rgb(TEXT_DIM)).child(name))
+            .child(
+                div()
+                    .w(px(NAME_WIDTH))
+                    .text_color(rgb(TEXT_DIM))
+                    .child(name),
+            )
             .child(
                 div()
                     .w(px(TRACK_WIDTH))
