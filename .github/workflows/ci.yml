@@ -58,6 +58,9 @@ jobs:
             libfontconfig1-dev libfreetype-dev \
             libvulkan-dev libssl-dev
 
+      - name: Who pulls xattr (informational)
+        run: cargo tree -i xattr || true
+
       - name: Build
         run: cargo build -p ddcui-gpui --verbose
 

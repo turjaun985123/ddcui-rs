@@ -134,7 +134,10 @@ mod tests {
             max: 100,
         };
         assert_eq!(value.percent(), 50);
-        assert_eq!(VcpValue::from_percent(VcpCode::BRIGHTNESS, 50, 100).current, 50);
+        assert_eq!(
+            VcpValue::from_percent(VcpCode::BRIGHTNESS, 50, 100).current,
+            50
+        );
     }
 
     #[test]

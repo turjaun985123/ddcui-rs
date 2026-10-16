@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Application, Bounds, Context, MouseButton, MouseUpEvent,
-    Window, WindowBounds, WindowOptions,
+    App, Application, Bounds, Context, MouseButton, MouseUpEvent, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, rgb, size,
 };
 
 use ddc_core::mock::MockBackend;
@@ -136,9 +136,11 @@ impl Render for AppState {
                     )
                     .child("Refresh"),
             )
-            .children(indices.into_iter().map(|index| {
-                self.render_monitor(index, cx)
-            }))
+            .children(
+                indices
+                    .into_iter()
+                    .map(|index| self.render_monitor(index, cx)),
+            )
     }
 }
 
@@ -154,19 +156,13 @@ impl AppState {
         let fill_width = (percent as f32 / 100.0) * 240.0;
 
         let decrease = cx.listener(
-            move |this: &mut Self,
-             _: &MouseUpEvent,
-             _: &mut Window,
-             cx: &mut Context<Self>| {
+            move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                 this.adjust(index, -1);
                 cx.notify();
             },
         );
         let increase = cx.listener(
-            move |this: &mut Self,
-             _: &MouseUpEvent,
-             _: &mut Window,
-             cx: &mut Context<Self>| {
+            move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                 this.adjust(index, 1);
                 cx.notify();
             },
@@ -181,13 +177,18 @@ impl AppState {
             .rounded_md()
             .child(div().child(label))
             .child(
-                div().w(px(240.0)).h(px(10.0)).rounded_md().bg(rgb(TRACK)).child(
-                    div()
-                        .h(px(10.0))
-                        .w(px(fill_width))
-                        .rounded_md()
-                        .bg(rgb(ACCENT)),
-                ),
+                div()
+                    .w(px(240.0))
+                    .h(px(10.0))
+                    .rounded_md()
+                    .bg(rgb(TRACK))
+                    .child(
+                        div()
+                            .h(px(10.0))
+                            .w(px(fill_width))
+                            .rounded_md()
+                            .bg(rgb(ACCENT)),
+                    ),
             )
             .child(
                 div()

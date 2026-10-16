@@ -127,10 +127,14 @@ impl DdcBackend for MockBackend {
             .iter()
             .find(|candidate| candidate.id.display == monitor.display)
             .ok_or(DdcError::MonitorNotFound(monitor.display))?;
-        found.values.get(&code).copied().ok_or(DdcError::FeatureNotSupported {
-            monitor: monitor.display,
-            code: code.raw(),
-        })
+        found
+            .values
+            .get(&code)
+            .copied()
+            .ok_or(DdcError::FeatureNotSupported {
+                monitor: monitor.display,
+                code: code.raw(),
+            })
     }
 
     fn set_vcp(&self, monitor: &MonitorId, code: VcpCode, value: u16) -> Result<()> {
@@ -139,10 +143,13 @@ impl DdcBackend for MockBackend {
             .iter_mut()
             .find(|candidate| candidate.id.display == monitor.display)
             .ok_or(DdcError::MonitorNotFound(monitor.display))?;
-        let slot = found.values.get_mut(&code).ok_or(DdcError::FeatureNotSupported {
-            monitor: monitor.display,
-            code: code.raw(),
-        })?;
+        let slot = found
+            .values
+            .get_mut(&code)
+            .ok_or(DdcError::FeatureNotSupported {
+                monitor: monitor.display,
+                code: code.raw(),
+            })?;
         if value > slot.max {
             return Err(DdcError::OutOfRange {
                 value,

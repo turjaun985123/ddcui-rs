@@ -57,6 +57,14 @@ cargo run -p ddcui-gpui
 If the `ddcutil` executable is not found, the app falls back to a mock backend so
 the UI is still usable for development.
 
+## Dependency patch
+
+`xattr 0.2.3` (pulled in transitively by the GPUI dependency tree) references
+`libc::ENOATTR`, which libc removed on Linux/Android after `0.2.126` (it was a
+deprecated alias for `ENODATA`). The crate is vendored under `vendor/xattr` with
+a one-line platform fix and wired in via `[patch.crates-io]` in the workspace
+`Cargo.toml`.
+
 ## License
 
 GPL-2.0-or-later, matching the upstream `ddcui` project.

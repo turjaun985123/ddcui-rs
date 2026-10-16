@@ -38,13 +38,16 @@ impl DdcutilCli {
     }
 
     fn run(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new(&self.program).args(args).output().map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                DdcError::Unavailable(format!("'{}' was not found in PATH", self.program))
-            } else {
-                DdcError::Io(err)
-            }
-        })?;
+        let output = Command::new(&self.program)
+            .args(args)
+            .output()
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    DdcError::Unavailable(format!("'{}' was not found in PATH", self.program))
+                } else {
+                    DdcError::Io(err)
+                }
+            })?;
 
         if !output.status.success() {
             return Err(DdcError::Command {
@@ -183,16 +186,16 @@ pub fn parse_getvcp(code: VcpCode, output: &str) -> Result<VcpValue> {
     for raw in output.lines() {
         let line = raw.trim();
 
-        if let Some(rest) = line.strip_prefix("VCP code") {
-            if let Some(value) = parse_long_form(code, rest) {
-                return Ok(value);
-            }
-        }
+        let parsed = line
+            .strip_prefix("VCP code")
+            .and_then(|rest| parse_long_form(code, rest))
+            .or_else(|| {
+                line.strip_prefix("VCP ")
+                    .and_then(|rest| parse_brief_form(code, rest))
+            });
 
-        if let Some(rest) = line.strip_prefix("VCP ") {
-            if let Some(value) = parse_brief_form(code, rest) {
-                return Ok(value);
-            }
+        if let Some(value) = parsed {
+            return Ok(value);
         }
     }
 
@@ -219,7 +222,10 @@ fn parse_long_form(code: VcpCode, rest: &str) -> Option<VcpValue> {
 
 fn number_after(haystack: &str, needle: &str) -> Option<u16> {
     let tail = haystack.split(needle).nth(1)?;
-    let digits = tail.trim_start().split(|c: char| !c.is_ascii_digit()).next()?;
+    let digits = tail
+        .trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?;
     digits.parse::<u16>().ok()
 }
 
@@ -287,7 +293,11 @@ Display 2
         let output = "VCP Features:\n   Feature: 10\n   Feature: 12\n   Feature: 60\n";
         assert_eq!(
             parse_capabilities(output),
-            vec![VcpCode::BRIGHTNESS, VcpCode::CONTRAST, VcpCode::INPUT_SOURCE]
+            vec![
+                VcpCode::BRIGHTNESS,
+                VcpCode::CONTRAST,
+                VcpCode::INPUT_SOURCE
+            ]
         );
     }
 }
