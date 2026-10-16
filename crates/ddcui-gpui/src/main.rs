@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, MouseUpEvent, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rgb, size,
+    div, prelude::*, px, rgb, size, App, Application, Bounds, Context, MouseButton, MouseUpEvent,
+    Window, WindowBounds, WindowOptions,
 };
 
 use ddc_core::mock::MockBackend;
@@ -150,7 +150,7 @@ impl AppState {
         let percent = if row.max == 0 {
             0
         } else {
-            (u32::from(row.brightness) * 100 / u32::from(row.max)) as u32
+            u32::from(row.brightness) * 100 / u32::from(row.max)
         };
         let label = format!("{}  —  {}%", row.id.label(), percent);
         let fill_width = (percent as f32 / 100.0) * 240.0;
