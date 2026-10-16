@@ -37,6 +37,16 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.2.0" date="2026-10-17">
+      <description>
+        <p>
+          The brightness and contrast rows now have a draggable level bar:
+          click anywhere on it to jump to that value, or press and drag to
+          sweep. Brightness/contrast pairs can be saved as presets and
+          reapplied with one click.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-16"/>
   </releases>
 </component>

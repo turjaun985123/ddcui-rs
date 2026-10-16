@@ -13,8 +13,20 @@ same idea in Rust: a backend-agnostic core crate plus a GPUI desktop front-end.
 ## Status
 
 Early port. The DDC/CI core is functional and unit-tested; the GPUI UI covers
-monitor discovery and brightness control and is built in CI. See `docs/` and the
-tracking issues for the parity roadmap.
+monitor discovery, brightness/contrast control and saved presets and is built in
+CI. See `docs/` and the tracking issues for the parity roadmap.
+
+## Features
+
+* Discovers every DDC/CI monitor the active backend can see.
+* One row per supported continuous VCP feature, with a **draggable level bar**
+  (click anywhere to jump to that value, or press and drag to sweep), `−`/`+`
+  stepper buttons in 5% steps, and `0/25/50/75/100` quick-set buttons.
+* **Presets**: capture the current brightness/contrast pair and reapply it to
+  every monitor with one click. Stored in
+  `$XDG_CONFIG_HOME/ddcui-rs/profiles.json`.
+* A draggable title bar with working minimise/close buttons, a refresh button,
+  and a status bar that reports the result of every action.
 
 ## Workspace layout
 
@@ -83,21 +95,21 @@ page:
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.1.0-x86_64.AppImage
-./ddcui-rs-0.1.0-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.2.0-x86_64.AppImage
+./ddcui-rs-0.2.0-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.1.0_amd64.deb
+sudo apt install ./ddcui-rs_0.2.0_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.1.0-x86_64-linux.tar.gz
-cd ddcui-rs-0.1.0-x86_64-linux
+tar xzf ddcui-rs-0.2.0-x86_64-linux.tar.gz
+cd ddcui-rs-0.2.0-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 
