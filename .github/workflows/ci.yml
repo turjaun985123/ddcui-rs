@@ -103,3 +103,13 @@ jobs:
               assert (root / plugin.get("files", "files") / name).is_file(), name
           print(f"{plugin['id']}: {plugin['uuid']}, shell-version {metadata['shell-version']}")
           PY
+
+      # The release workflow validates these too, but a broken entry should not
+      # need a tag push to be noticed.
+      - name: Desktop metadata is valid
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream
+          desktop-file-validate packaging/io.github.jerinshop7_maker.DdcuiRs.desktop
+          appstreamcli validate --no-net packaging/io.github.jerinshop7_maker.DdcuiRs.metainfo.xml

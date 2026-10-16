@@ -25,11 +25,19 @@ for size in 16 32 48 64 128 256; do
     "share/icons/hicolor/${size}x${size}/apps/$APP_ID.png" 0644
 done
 
-# Desktop integrations (GNOME Quick Settings button, ...).
+# Desktop integrations (GNOME Quick Settings button, ...). Plugins are copied
+# one directory at a time so an upgrade cannot take out plugins the user added
+# by hand.
 if [ -d "$here/plugins" ]; then
-  mkdir -p "$DESTDIR$PREFIX/share/ddcui-rs"
-  rm -rf "$DESTDIR$PREFIX/share/ddcui-rs/plugins"
-  cp -r "$here/plugins" "$DESTDIR$PREFIX/share/ddcui-rs/plugins"
+  share_plugins="$DESTDIR$PREFIX/share/ddcui-rs/plugins"
+  mkdir -p "$share_plugins"
+  for plugin in "$here"/plugins/*/; do
+    [ -d "$plugin" ] || continue
+    name="$(basename "$plugin")"
+    rm -rf "$share_plugins/$name"
+    cp -r "$plugin" "$share_plugins/$name"
+    echo "Installed plugin: $name"
+  done
 fi
 
 # Refresh the desktop/icon caches when installing on a live system.

@@ -25,6 +25,10 @@ pub enum DdcError {
     #[error("command failed (status {status:?}): {stderr}")]
     Command { status: Option<i32>, stderr: String },
 
+    /// An external command did not finish in time and was killed.
+    #[error("command timed out after {0:?}")]
+    Timeout(std::time::Duration),
+
     /// A backend output could not be parsed.
     #[error("failed to parse backend output: {0}")]
     Parse(String),

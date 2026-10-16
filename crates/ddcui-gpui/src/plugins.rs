@@ -18,10 +18,29 @@
 //! copies a GNOME Shell extension into the user's extension directory and
 //! enables it, so the button shows up in the Quick Settings menu next to the
 //! power off button.
+//!
+//! # Trust
+//!
+//! Installing a plugin copies files into the user's home directory and, in the
+//! case of a shell extension, runs inside the desktop session, so a plugin is
+//! as sensitive as a program. Two things keep that predictable:
+//!
+//! * only plugins that ship with ddcui-rs are trusted silently; user and
+//!   `DDCUI_PLUGIN_PATH` plugins are announced before they are installed, and
+//! * every path that comes out of a manifest is validated (see
+//!   [`validate_uuid`] and [`validate_relative_dir`]), payload directories have
+//!   to stay inside their plugin directory, and symlinks are refused rather
+//!   than followed.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+/// File written into an extension directory that ddcui-rs installed.
+const MARKER: &str = ".ddcui-rs-plugin";
+
+/// Longest extension uuid that is accepted.
+const MAX_UUID_LEN: usize = 128;
 
 /// The `plugin.json` manifest shipped with every plugin.
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +67,33 @@ fn default_files() -> String {
     "files".to_string()
 }
 
+/// Where a plugin was found, which decides how far it is trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Shipped with ddcui-rs.
+    Bundled,
+    /// Put there by the user, in `~/.local/share/ddcui-rs/plugins`.
+    User,
+    /// Named by `DDCUI_PLUGIN_PATH`.
+    Environment,
+}
+
+impl Origin {
+    /// How to describe the origin in messages.
+    fn label(self) -> &'static str {
+        match self {
+            Origin::Bundled => "shipped with ddcui-rs",
+            Origin::User => "installed by you",
+            Origin::Environment => "named by DDCUI_PLUGIN_PATH",
+        }
+    }
+
+    /// Whether installing this plugin without a warning is fine.
+    fn is_trusted(self) -> bool {
+        self == Origin::Bundled
+    }
+}
+
 /// A discovered plugin and the directory it lives in.
 #[derive(Debug, Clone)]
 pub struct Plugin {
@@ -55,13 +101,48 @@ pub struct Plugin {
     pub manifest: Manifest,
     /// Directory holding the manifest.
     pub dir: PathBuf,
+    /// Where the plugin was found.
+    pub origin: Origin,
 }
 
 impl Plugin {
-    /// The directory the installed files are copied from.
-    pub fn source(&self) -> PathBuf {
-        self.dir.join(&self.manifest.files)
+    /// The payload directory, validated to stay inside the plugin directory.
+    pub fn payload(&self) -> Result<PathBuf, String> {
+        validate_relative_dir(&self.manifest.files)?;
+
+        let dir = self.dir.join(&self.manifest.files);
+        if !dir.is_dir() {
+            return Err(format!("missing plugin files: {}", dir.display()));
+        }
+
+        // Resolving both sides also catches a payload that is a symlink to
+        // somewhere else entirely.
+        let root = canonical(&self.dir)?;
+        let payload = canonical(&dir)?;
+        if !payload.starts_with(&root) {
+            return Err(format!(
+                "{} is outside the plugin directory {}",
+                payload.display(),
+                root.display()
+            ));
+        }
+        Ok(payload)
     }
+}
+
+/// Resolve a path, reporting failures with the path that caused them.
+fn canonical(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize()
+        .map_err(|err| format!("cannot resolve {}: {err}", path.display()))
+}
+
+/// Everything that was found while looking for plugins.
+#[derive(Debug, Default)]
+pub struct Discovery {
+    /// Usable plugins, sorted by id.
+    pub plugins: Vec<Plugin>,
+    /// Manifests that were found but could not be used.
+    pub problems: Vec<String>,
 }
 
 /// Directories that are searched for plugins, highest priority first.
@@ -106,102 +187,248 @@ fn next_to_executable() -> Vec<PathBuf> {
     dirs
 }
 
+/// How much a plugin found in `dir` is trusted.
+fn origin_of(dir: &Path) -> Origin {
+    if let Some(from_env) = std::env::var_os("DDCUI_PLUGIN_PATH") {
+        let named = std::env::split_paths(&from_env).any(|entry| entry.as_path() == dir);
+        if named {
+            return Origin::Environment;
+        }
+    }
+    if let Some(data) = data_home() {
+        if dir.starts_with(data.join("ddcui-rs").join("plugins")) {
+            return Origin::User;
+        }
+    }
+    Origin::Bundled
+}
+
 /// Every plugin on the search path, sorted by id.
-pub fn discover() -> Vec<Plugin> {
-    let mut plugins: Vec<Plugin> = Vec::new();
+pub fn discover() -> Discovery {
+    let mut found = Discovery::default();
 
     for dir in search_paths() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let path = entry.path().join("plugin.json");
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
+            let plugin_dir = entry.path();
+            let manifest_path = plugin_dir.join("plugin.json");
+            let text = match std::fs::read_to_string(&manifest_path) {
+                Ok(text) => text,
+                // A directory without a manifest is not a plugin; the four
+                // search directories are expected to hold other things too.
+                Err(_) => continue,
             };
-            let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
-                continue;
+
+            let manifest: Manifest = match serde_json::from_str(&text) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    found
+                        .problems
+                        .push(format!("{}: {err}", manifest_path.display()));
+                    continue;
+                }
             };
-            if contains(&plugins, &manifest.id) {
+            if let Err(problem) = check_manifest(&manifest) {
+                found
+                    .problems
+                    .push(format!("{}: {problem}", manifest_path.display()));
                 continue;
             }
-            plugins.push(Plugin {
+            if found
+                .plugins
+                .iter()
+                .any(|other| other.manifest.id == manifest.id)
+            {
+                continue;
+            }
+
+            found.plugins.push(Plugin {
                 manifest,
-                dir: entry.path(),
+                dir: plugin_dir,
+                origin: origin_of(&dir),
             });
         }
     }
 
-    plugins.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
-    plugins
+    found
+        .plugins
+        .sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    found
 }
 
-/// Whether a plugin with this id was already found.
-fn contains(plugins: &[Plugin], id: &str) -> bool {
-    plugins.iter().any(|plugin| plugin.manifest.id == id)
+/// Check the parts of a manifest that every command depends on.
+fn check_manifest(manifest: &Manifest) -> Result<(), String> {
+    if manifest.id.is_empty() || !is_plain_name(&manifest.id) {
+        return Err(format!("invalid plugin id: {}", manifest.id));
+    }
+    if manifest.name.is_empty() {
+        return Err("the manifest has no name".to_string());
+    }
+    match manifest.kind.as_str() {
+        "gnome-shell-extension" => {
+            let Some(uuid) = manifest.uuid.as_deref() else {
+                return Err("a gnome-shell-extension needs a uuid".to_string());
+            };
+            validate_uuid(uuid)?;
+        }
+        other => return Err(format!("unsupported plugin kind: {other}")),
+    }
+    validate_relative_dir(&manifest.files)
 }
 
 /// Look up a single plugin by id.
 pub fn find(id: &str) -> Option<Plugin> {
-    let plugins = discover();
-    plugins.into_iter().find(|plugin| plugin.manifest.id == id)
+    let found = discover();
+    found
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == id)
 }
 
 /// Whether a plugin is already installed for this user.
 pub fn is_installed(plugin: &Plugin) -> bool {
-    let Some(target) = install_target(plugin) else {
-        return false;
-    };
-    target.exists()
+    match install_target(plugin) {
+        Ok(target) => target.exists(),
+        Err(_) => false,
+    }
 }
 
-/// Where a plugin's files end up, if the kind is known.
-pub fn install_target(plugin: &Plugin) -> Option<PathBuf> {
-    if plugin.manifest.kind != "gnome-shell-extension" {
-        return None;
+/// Whether ddcui-rs installed what is in the target directory.
+pub fn is_managed(plugin: &Plugin) -> bool {
+    match install_target(plugin) {
+        Ok(target) => target.join(MARKER).is_file(),
+        Err(_) => false,
     }
-    let uuid = plugin.manifest.uuid.as_deref()?;
-    let data = data_home()?;
+}
+
+/// Where a plugin's files end up.
+pub fn install_target(plugin: &Plugin) -> Result<PathBuf, String> {
+    let kind = plugin.manifest.kind.as_str();
+    if kind != "gnome-shell-extension" {
+        return Err(format!("unsupported plugin kind: {kind}"));
+    }
+    let Some(uuid) = plugin.manifest.uuid.as_deref() else {
+        return Err("the manifest has no uuid".to_string());
+    };
+    validate_uuid(uuid)?;
+
+    let Some(data) = data_home() else {
+        return Err("no home directory to install into".to_string());
+    };
     let extensions = data.join("gnome-shell").join("extensions");
-    Some(extensions.join(uuid))
+    Ok(extensions.join(uuid))
+}
+
+/// Validate a GNOME Shell extension uuid.
+///
+/// The shell itself accepts `[A-Za-z0-9._-]+`, which already rules out path
+/// separators; the extra checks here reject empty names, `.`/`..`, leading
+/// dots (hidden directories) and absurd lengths, so a manifest can never name
+/// a directory outside `<extensions>/<uuid>`.
+fn validate_uuid(uuid: &str) -> Result<(), String> {
+    if uuid.is_empty() {
+        return Err("the extension uuid is empty".to_string());
+    }
+    if uuid.len() > MAX_UUID_LEN {
+        return Err(format!(
+            "the extension uuid is longer than {MAX_UUID_LEN} characters"
+        ));
+    }
+    if uuid == "." || uuid == ".." || uuid.starts_with('.') {
+        return Err(format!("invalid extension uuid: {uuid}"));
+    }
+    let valid = uuid
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@'));
+    if !valid {
+        return Err(format!("invalid extension uuid: {uuid}"));
+    }
+    Ok(())
+}
+
+/// Validate the `files` field: a relative directory name without surprises.
+fn validate_relative_dir(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("the files field is empty".to_string());
+    }
+    if name.starts_with('/') || name.starts_with('\\') || name.contains('\\') {
+        return Err(format!("the files field must be relative: {name}"));
+    }
+    for part in name.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(format!("invalid files field: {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is a plain identifier (no separators, no surprises).
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_UUID_LEN
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 /// Install a plugin, returning the steps that were performed.
 pub fn install(plugin: &Plugin) -> Result<Vec<String>, String> {
-    match plugin.manifest.kind.as_str() {
-        "gnome-shell-extension" => install_extension(plugin),
-        other => Err(format!("unsupported plugin kind: {other}")),
-    }
-}
-
-/// Remove an installed plugin, returning the steps that were performed.
-pub fn uninstall(plugin: &Plugin) -> Result<Vec<String>, String> {
-    match plugin.manifest.kind.as_str() {
-        "gnome-shell-extension" => uninstall_extension(plugin),
-        other => Err(format!("unsupported plugin kind: {other}")),
-    }
-}
-
-/// Copy a GNOME Shell extension into place and enable it.
-fn install_extension(plugin: &Plugin) -> Result<Vec<String>, String> {
     let Some(uuid) = plugin.manifest.uuid.clone() else {
         return Err("the manifest has no uuid".to_string());
     };
-    let Some(target) = install_target(plugin) else {
-        return Err("no home directory to install into".to_string());
+    let target = install_target(plugin)?;
+    let payload = plugin.payload()?;
+
+    let Some(extensions) = target.parent().map(Path::to_path_buf) else {
+        return Err(format!("{} has no parent directory", target.display()));
     };
-    let source = plugin.source();
-    if !source.is_dir() {
-        return Err(format!("missing plugin files: {}", source.display()));
-    }
+    std::fs::create_dir_all(&extensions)
+        .map_err(|err| format!("cannot create {}: {err}", extensions.display()))?;
 
+    // Install into a staging directory first, then swap it in, so a failed
+    // copy never leaves a half-written extension behind.
+    let staging = extensions.join(format!(".{uuid}.ddcui-rs-staging"));
+    let backup = extensions.join(format!(".{uuid}.ddcui-rs-backup"));
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_dir_all(&backup);
+
+    let copied = match copy_dir(&payload, &staging) {
+        Ok(copied) => copied,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(err);
+        }
+    };
+    let marker = format!("{}\n{}\n", plugin.manifest.id, plugin.manifest.name);
+    std::fs::write(staging.join(MARKER), marker)
+        .map_err(|err| format!("cannot write the plugin marker: {err}"))?;
+
+    let mut steps = Vec::new();
     if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|err| format!("cannot replace {}: {err}", target.display()))?;
+        if !is_managed(plugin) {
+            steps.push(format!(
+                "replacing {}, which ddcui-rs did not install",
+                target.display()
+            ));
+        }
+        std::fs::rename(&target, &backup)
+            .map_err(|err| format!("cannot move {} aside: {err}", target.display()))?;
     }
-    let copied = copy_dir(&source, &target)?;
 
-    let mut steps = vec![format!("copied {copied} file(s) to {}", target.display())];
+    if let Err(err) = std::fs::rename(&staging, &target) {
+        // Put the previous installation back before giving up.
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &target);
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("cannot install into {}: {err}", target.display()));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+
+    steps.push(format!("copied {copied} file(s) to {}", target.display()));
     steps.push(enable_extension(&uuid));
     Ok(steps)
 }
@@ -221,13 +448,11 @@ fn enable_extension(uuid: &str) -> String {
 }
 
 /// Disable a GNOME Shell extension and delete its files.
-fn uninstall_extension(plugin: &Plugin) -> Result<Vec<String>, String> {
+pub fn uninstall(plugin: &Plugin) -> Result<Vec<String>, String> {
     let Some(uuid) = plugin.manifest.uuid.clone() else {
         return Err("the manifest has no uuid".to_string());
     };
-    let Some(target) = install_target(plugin) else {
-        return Err("no home directory to change".to_string());
-    };
+    let target = install_target(plugin)?;
 
     let mut steps = Vec::new();
     if run_tool("gnome-extensions", &["disable", &uuid]).is_ok() {
@@ -236,17 +461,31 @@ fn uninstall_extension(plugin: &Plugin) -> Result<Vec<String>, String> {
     if disable_setting(&uuid).is_ok() {
         steps.push(format!("removed {uuid} from the enabled extensions"));
     }
-    if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|err| format!("cannot remove {}: {err}", target.display()))?;
-        steps.push(format!("removed {}", target.display()));
-    } else {
+
+    if !target.exists() {
         steps.push(format!("{uuid} was not installed"));
+        return Ok(steps);
     }
+
+    // The target is always `<extensions>/<uuid>` with a validated uuid, so it
+    // cannot point anywhere else; check anyway before removing a tree.
+    let named_right = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == uuid);
+    if !named_right {
+        return Err(format!("refusing to remove {}", target.display()));
+    }
+
+    std::fs::remove_dir_all(&target)
+        .map_err(|err| format!("cannot remove {}: {err}", target.display()))?;
+    steps.push(format!("removed {}", target.display()));
     Ok(steps)
 }
 
 /// Copy a directory tree, returning how many files were written.
+///
+/// Symlinks are refused: a plugin may not reach outside its own directory.
 fn copy_dir(source: &Path, target: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(target)
         .map_err(|err| format!("cannot create {}: {err}", target.display()))?;
@@ -257,13 +496,26 @@ fn copy_dir(source: &Path, target: &Path) -> Result<usize, String> {
     let mut copied = 0;
     for entry in entries.flatten() {
         let from = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|err| format!("cannot inspect {}: {err}", from.display()))?;
+
+        if kind.is_symlink() {
+            return Err(format!(
+                "refusing to install the symlink {}",
+                from.display()
+            ));
+        }
+
         let to = target.join(entry.file_name());
-        if from.is_dir() {
+        if kind.is_dir() {
             copied += copy_dir(&from, &to)?;
-        } else {
+        } else if kind.is_file() {
             std::fs::copy(&from, &to)
                 .map_err(|err| format!("cannot copy {}: {err}", from.display()))?;
             copied += 1;
+        } else {
+            return Err(format!("refusing to install {}", from.display()));
         }
     }
     Ok(copied)
@@ -301,26 +553,35 @@ fn shell_knows(uuid: &str) -> bool {
 /// Add a uuid to `org.gnome.shell enabled-extensions`, the setting the shell
 /// reads at start-up (`gnome-extensions enable` writes the same one).
 fn enable_setting(uuid: &str) -> Result<(), String> {
-    let mut enabled = enabled_list().unwrap_or_default();
+    validate_uuid(uuid)?;
+
+    // Never fall back to an empty list here: that would drop the other
+    // extensions the user has enabled.
+    let mut enabled = enabled_list().ok_or("cannot read the enabled extensions")?;
     if enabled.iter().any(|item| item == uuid) {
         return Ok(());
     }
     enabled.push(uuid.to_string());
-    let value = format!("[{}]", quoted(&enabled));
-    let args = ["set", "org.gnome.shell", "enabled-extensions", &value];
-    run_tool("gsettings", &args)
+    set_enabled_list(&enabled)
 }
 
 /// Drop a uuid from `org.gnome.shell enabled-extensions`.
 fn disable_setting(uuid: &str) -> Result<(), String> {
-    let enabled = enabled_list().unwrap_or_default();
+    validate_uuid(uuid)?;
+
+    let enabled = enabled_list().ok_or("cannot read the enabled extensions")?;
     let mut kept: Vec<String> = Vec::new();
     for item in enabled {
         if item != uuid {
             kept.push(item);
         }
     }
-    let value = format!("[{}]", quoted(&kept));
+    set_enabled_list(&kept)
+}
+
+/// Write the whole enabled-extensions list back.
+fn set_enabled_list(items: &[String]) -> Result<(), String> {
+    let value = format!("[{}]", quoted(items));
     let args = ["set", "org.gnome.shell", "enabled-extensions", &value];
     run_tool("gsettings", &args)
 }
@@ -338,35 +599,62 @@ fn enabled_list() -> Option<Vec<String>> {
     Some(single_quoted_items(&text))
 }
 
-/// Render a list as the `['a', 'b']` text `gsettings` expects.
+/// Render a list the way `gsettings` expects, with GVariant escaping.
+///
+/// A real GVariant library would be nicer, but the values here are uuids and
+/// the format is small enough to get right: backslashes and single quotes are
+/// the only characters that need escaping inside the `'...'` form.
 fn quoted(items: &[String]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for item in items {
-        parts.push(format!("'{item}'"));
+        parts.push(quoted_one(item));
     }
     parts.join(", ")
+}
+
+/// Wrap one item in single quotes, escaping what has to be escaped.
+fn quoted_one(item: &str) -> String {
+    let mut out = String::with_capacity(item.len() + 2);
+    out.push('\'');
+    for ch in item.chars() {
+        if ch == '\\' || ch == '\'' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('\'');
+    out
 }
 
 /// Pull the single quoted strings out of `gsettings` output.
 fn single_quoted_items(text: &str) -> Vec<String> {
     let mut items = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find('\'') {
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('\'') else {
-            break;
-        };
-        items.push(after[..end].to_string());
-        rest = &after[end + 1..];
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] != '\'' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+
+        let mut item = String::new();
+        while index < chars.len() && chars[index] != '\'' {
+            if chars[index] == '\\' && index + 1 < chars.len() {
+                index += 1;
+            }
+            item.push(chars[index]);
+            index += 1;
+        }
+        index += 1;
+        items.push(item);
     }
     items
 }
 
 /// A note to print after a successful install, when one is needed.
 fn follow_up(plugin: &Plugin) -> Option<String> {
-    if plugin.manifest.kind != "gnome-shell-extension" {
-        return None;
-    }
     let uuid = plugin.manifest.uuid.as_deref()?;
     if shell_knows(uuid) {
         return None;
@@ -381,8 +669,13 @@ fn follow_up(plugin: &Plugin) -> Option<String> {
 
 /// `--plugin-list`
 pub fn run_list() -> i32 {
-    let plugins = discover();
-    if plugins.is_empty() {
+    let found = discover();
+
+    for problem in &found.problems {
+        eprintln!("ddcui-rs: ignoring a broken manifest: {problem}");
+    }
+
+    if found.plugins.is_empty() {
         println!("no plugins found; looked in:");
         for path in search_paths() {
             println!("  {}", path.display());
@@ -390,8 +683,8 @@ pub fn run_list() -> i32 {
         return 0;
     }
 
-    println!("{} plugin(s) found:", plugins.len());
-    for plugin in &plugins {
+    println!("{} plugin(s) found:", found.plugins.len());
+    for plugin in &found.plugins {
         let state = if is_installed(plugin) {
             "installed"
         } else {
@@ -405,6 +698,11 @@ pub fn run_list() -> i32 {
         if !manifest.summary.is_empty() {
             println!("      {}", manifest.summary);
         }
+        println!(
+            "      from {} ({})",
+            plugin.dir.display(),
+            plugin.origin.label()
+        );
     }
     0
 }
@@ -416,6 +714,16 @@ pub fn run_install(id: &str) -> i32 {
         eprintln!("Run 'ddcui-rs --plugin-list' to see what is available.");
         return 1;
     };
+
+    if !plugin.origin.is_trusted() {
+        println!(
+            "{} was {}, not shipped with ddcui-rs:",
+            plugin.manifest.id,
+            plugin.origin.label()
+        );
+        println!("  {}", plugin.dir.display());
+        println!("Installing it copies the files above into your account.");
+    }
 
     match install(&plugin) {
         Ok(steps) => {
@@ -470,6 +778,30 @@ mod tests {
             .join("plugins")
     }
 
+    fn manifest(id: &str, uuid: &str) -> Manifest {
+        Manifest {
+            id: id.to_string(),
+            name: "Test plugin".to_string(),
+            summary: String::new(),
+            kind: "gnome-shell-extension".to_string(),
+            uuid: Some(uuid.to_string()),
+            files: "files".to_string(),
+        }
+    }
+
+    /// Build a plugin directory with one file in its payload.
+    fn fake_plugin(name: &str, manifest: Manifest, payload: &str) -> Plugin {
+        let dir = std::env::temp_dir().join(format!("ddcui-rs-plugin-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(dir.join("files").join("extension.js"), payload).unwrap();
+        Plugin {
+            manifest,
+            dir,
+            origin: Origin::User,
+        }
+    }
+
     #[test]
     fn manifest_defaults_are_filled_in() {
         let text = r#"{"id":"x","name":"X","kind":"gnome-shell-extension","uuid":"x@y"}"#;
@@ -477,6 +809,7 @@ mod tests {
         assert_eq!(manifest.id, "x");
         assert_eq!(manifest.files, "files");
         assert!(manifest.summary.is_empty());
+        assert!(check_manifest(&manifest).is_ok());
     }
 
     #[test]
@@ -486,6 +819,7 @@ mod tests {
         let manifest: Manifest = serde_json::from_str(&text).unwrap();
         assert_eq!(manifest.id, "gnome-quick-menu");
         assert_eq!(manifest.kind, "gnome-shell-extension");
+        assert!(check_manifest(&manifest).is_ok());
 
         let metadata = std::fs::read_to_string(dir.join("files").join("metadata.json")).unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
@@ -498,9 +832,96 @@ mod tests {
 
     #[test]
     fn the_bundled_plugin_ships_its_entry_point() {
-        let files = bundled().join("gnome-quick-menu").join("files");
-        assert!(files.join("extension.js").is_file());
-        assert!(files.join("metadata.json").is_file());
+        let dir = bundled().join("gnome-quick-menu");
+        let text = std::fs::read_to_string(dir.join("plugin.json")).unwrap();
+        let manifest: Manifest = serde_json::from_str(&text).unwrap();
+        let plugin = Plugin {
+            manifest,
+            dir,
+            origin: Origin::Bundled,
+        };
+
+        let payload = plugin.payload().unwrap();
+        assert!(payload.join("extension.js").is_file());
+        assert!(payload.join("metadata.json").is_file());
+    }
+
+    #[test]
+    fn traversal_and_odd_uuids_are_rejected() {
+        let long = "a".repeat(MAX_UUID_LEN + 1);
+        let rejected = [
+            "",
+            ".",
+            "..",
+            "../../../../etc",
+            "/etc/passwd",
+            ".hidden",
+            "name/../other",
+            "name with space",
+            "name\twith\ttab",
+            "quote'name",
+            "back\\slash",
+            long.as_str(),
+        ];
+        for uuid in rejected {
+            assert!(validate_uuid(uuid).is_err(), "accepted {uuid:?}");
+        }
+
+        let accepted = [
+            "ddcui-rs@jerinshop7-maker",
+            "name@example.com",
+            "NAME_1-2.3@sub.domain",
+        ];
+        for uuid in accepted {
+            assert!(validate_uuid(uuid).is_ok(), "rejected {uuid:?}");
+        }
+    }
+
+    #[test]
+    fn a_traversal_uuid_never_becomes_a_target() {
+        let plugin = fake_plugin("traversal", manifest("evil", "../../../../tmp/owned"), "x");
+        assert!(install_target(&plugin).is_err());
+        assert!(install(&plugin).is_err());
+        assert!(uninstall(&plugin).is_err());
+    }
+
+    #[test]
+    fn odd_payload_directories_are_rejected() {
+        let rejected = ["", "/etc", "..", "../other", "a/../../b", "a//b", "a\\b"];
+        for name in rejected {
+            assert!(validate_relative_dir(name).is_err(), "accepted {name:?}");
+        }
+        for name in ["files", "payload", "a/b"] {
+            assert!(validate_relative_dir(name).is_ok(), "rejected {name:?}");
+        }
+
+        let mut plugin = fake_plugin("odd-payload", manifest("odd", "odd@example.com"), "x");
+        plugin.manifest.files = "../../".to_string();
+        assert!(plugin.payload().is_err());
+    }
+
+    #[test]
+    fn a_symlinked_payload_is_refused() {
+        let plugin = fake_plugin("symlink-payload", manifest("sym", "sym@example.com"), "x");
+        let outside = std::env::temp_dir().join("ddcui-rs-plugin-symlink-target");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir_all(plugin.dir.join("files")).unwrap();
+        std::os::unix::fs::symlink(&outside, plugin.dir.join("files")).unwrap();
+
+        assert!(plugin.payload().is_err());
+    }
+
+    #[test]
+    fn symlinks_in_the_payload_are_refused() {
+        let plugin = fake_plugin("symlink-inside", manifest("sym2", "sym2@example.com"), "x");
+        let payload = plugin.dir.join("files");
+        std::os::unix::fs::symlink("/etc/passwd", payload.join("passwd")).unwrap();
+
+        let target = plugin.dir.join("installed");
+        let error = copy_dir(&payload, &target).unwrap_err();
+        assert!(error.contains("symlink"), "{error}");
+
+        let _ = std::fs::remove_dir_all(&target);
     }
 
     #[test]
@@ -527,39 +948,42 @@ mod tests {
         assert_eq!(items, vec!["ding@rastersoft.com", "ubuntu-dock@ubuntu.com"]);
         assert_eq!(format!("[{}]", quoted(&items)), text);
 
-        // Adding our uuid and removing it again keeps the list intact.
         let mut ours = items.clone();
         ours.push("ddcui-rs@jerinshop7-maker".to_string());
         let rendered = format!("[{}]", quoted(&ours));
-        let back = single_quoted_items(&rendered);
-        assert_eq!(back, ours);
+        assert_eq!(single_quoted_items(&rendered), ours);
 
-        let mut kept: Vec<String> = Vec::new();
-        for item in back {
-            if !item.starts_with("ddcui") {
-                kept.push(item);
-            }
-        }
-        assert_eq!(kept, items);
+        // Odd entries keep their contents, and the list is not lost.
+        let odd = vec!["quote'here".to_string(), "back\\slash".to_string()];
+        let rendered = format!("[{}]", quoted(&odd));
+        assert_eq!(single_quoted_items(&rendered), odd);
     }
 
     #[test]
-    fn targets_are_derived_from_the_manifest() {
-        let manifest = Manifest {
-            id: "demo".to_string(),
-            name: "Demo".to_string(),
-            summary: String::new(),
-            kind: "gnome-shell-extension".to_string(),
-            uuid: Some("demo@example.com".to_string()),
-            files: "files".to_string(),
-        };
-        let plugin = Plugin {
-            manifest,
-            dir: PathBuf::from("/tmp/demo"),
-        };
-        assert_eq!(plugin.source(), Path::new("/tmp/demo/files"));
+    fn plugin_ids_are_plain_names() {
+        assert!(is_plain_name("gnome-quick-menu"));
+        assert!(!is_plain_name("../gnome"));
+        assert!(!is_plain_name(""));
+        assert!(!is_plain_name(".hidden"));
+        assert!(!is_plain_name("with space"));
+    }
 
-        let target = install_target(&plugin).unwrap();
-        assert!(target.ends_with("gnome-shell/extensions/demo@example.com"));
+    #[test]
+    fn uninstalling_a_plugin_that_is_not_there_changes_nothing() {
+        let plugin = fake_plugin(
+            "uninstall-missing",
+            manifest("gone", "gone@example.com"),
+            "x",
+        );
+        match uninstall(&plugin) {
+            // With a home directory the target is well formed and simply is
+            // not there yet.
+            Ok(steps) => assert!(steps.iter().any(|step| step.contains("was not installed"))),
+            // Without one there is nowhere to look in the first place.
+            Err(message) => assert!(message.contains("home"), "{message}"),
+        }
+
+        // Whatever happens, the source directory is left alone.
+        assert!(plugin.dir.join("files").join("extension.js").is_file());
     }
 }

@@ -81,31 +81,34 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
-            "--list" => command = Some(Command::List),
+            "--list" => choose(&mut command, Command::List)?,
             "--display" => {
+                if display.is_some() {
+                    return Err("only one --display may be given".to_string());
+                }
                 let text = take_value(args, &mut index, "--display")?;
                 display = Some(parse_display(text)?);
             }
-            "--get-brightness" => command = Some(get_command(VcpCode::BRIGHTNESS)),
-            "--get-contrast" => command = Some(get_command(VcpCode::CONTRAST)),
+            "--get-brightness" => choose(&mut command, get_command(VcpCode::BRIGHTNESS))?,
+            "--get-contrast" => choose(&mut command, get_command(VcpCode::CONTRAST))?,
             "--set-brightness" => {
                 let text = take_value(args, &mut index, "--set-brightness")?;
                 let percent = parse_percent(text)?;
-                command = Some(set_command(VcpCode::BRIGHTNESS, percent));
+                choose(&mut command, set_command(VcpCode::BRIGHTNESS, percent))?;
             }
             "--set-contrast" => {
                 let text = take_value(args, &mut index, "--set-contrast")?;
                 let percent = parse_percent(text)?;
-                command = Some(set_command(VcpCode::CONTRAST, percent));
+                choose(&mut command, set_command(VcpCode::CONTRAST, percent))?;
             }
-            "--plugin-list" => command = Some(Command::PluginList),
+            "--plugin-list" => choose(&mut command, Command::PluginList)?,
             "--plugin-install" => {
                 let text = take_value(args, &mut index, "--plugin-install")?;
-                command = Some(Command::PluginInstall(text.to_string()));
+                choose(&mut command, Command::PluginInstall(text.to_string()))?;
             }
             "--plugin-uninstall" => {
                 let text = take_value(args, &mut index, "--plugin-uninstall")?;
-                command = Some(Command::PluginUninstall(text.to_string()));
+                choose(&mut command, Command::PluginUninstall(text.to_string()))?;
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -128,6 +131,18 @@ fn get_command(feature: VcpCode) -> Command {
     }
 }
 
+/// Remember the chosen command, refusing to guess between two of them.
+///
+/// Letting the last flag win is how `--set-brightness 50 --plugin-list` turns
+/// into "why did nothing happen?".
+fn choose(slot: &mut Option<Command>, command: Command) -> Result<(), String> {
+    if slot.is_some() {
+        return Err("only one command may be given (see --help)".to_string());
+    }
+    *slot = Some(command);
+    Ok(())
+}
+
 /// Build a write command for `feature`; `--display` is applied by the caller.
 fn set_command(feature: VcpCode, percent: u8) -> Command {
     Command::Set {
@@ -147,10 +162,15 @@ fn take_value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&
     }
 }
 
+/// Parse a 1-based monitor number.
 fn parse_display(value: &str) -> Result<u32, String> {
-    value
+    let number: u32 = value
         .parse()
-        .map_err(|_| format!("invalid monitor number: {value}"))
+        .map_err(|_| format!("invalid monitor number: {value}"))?;
+    if number == 0 {
+        return Err("invalid monitor number: monitor numbers start at 1".to_string());
+    }
+    Ok(number)
 }
 
 /// Parse a percentage, rejecting values outside `0..=100`.
@@ -339,6 +359,54 @@ mod tests {
         assert!(parse(&args(&["--set-brightness", "150"])).is_err());
         assert!(parse(&args(&["--set-brightness", "300"])).is_err());
         assert!(parse(&args(&["--set-brightness", "abc"])).is_err());
+    }
+
+    #[test]
+    fn display_numbers_start_at_one() {
+        assert!(parse(&args(&["--display", "0", "--get-brightness"])).is_err());
+        assert!(parse(&args(&["--display", "-1", "--get-brightness"])).is_err());
+        assert!(parse(&args(&["--display", "abc", "--get-brightness"])).is_err());
+        assert!(parse(&args(&["--display", "", "--get-brightness"])).is_err());
+
+        // Out of range for u32, i.e. a number no monitor can have.
+        let too_big = (u64::from(u32::MAX) + 1).to_string();
+        assert!(parse(&args(&["--display", &too_big, "--get-brightness"])).is_err());
+
+        assert_eq!(
+            parse(&args(&["--display", "1", "--get-brightness"])).unwrap(),
+            Command::Get {
+                feature: VcpCode::BRIGHTNESS,
+                display: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn one_command_at_a_time() {
+        let two_sets = args(&["--set-brightness", "50", "--set-contrast", "60"]);
+        assert!(parse(&two_sets).is_err());
+
+        let set_and_plugin = args(&["--set-brightness", "50", "--plugin-list"]);
+        assert!(parse(&set_and_plugin).is_err());
+
+        let repeated = args(&["--set-brightness", "50", "--set-brightness", "60"]);
+        assert!(parse(&repeated).is_err());
+
+        let list_after_get = args(&["--list", "--get-brightness"]);
+        assert!(parse(&list_after_get).is_err());
+    }
+
+    #[test]
+    fn one_display_option_at_a_time() {
+        let repeated = args(&["--display", "1", "--display", "2", "--get-brightness"]);
+        assert!(parse(&repeated).is_err());
+    }
+
+    #[test]
+    fn missing_values_are_rejected() {
+        assert!(parse(&args(&["--set-brightness"])).is_err());
+        assert!(parse(&args(&["--set-contrast"])).is_err());
+        assert!(parse(&args(&["--display"])).is_err());
     }
 
     #[test]

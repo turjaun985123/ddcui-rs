@@ -51,9 +51,32 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
         run: |
-          ref="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            ref="$INPUT_VERSION"
+          else
+            ref="$REF_NAME"
+          fi
+
+          if [[ ! "$ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid release version: '$ref' (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+
           version="${ref#v}"
+          workspace_version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          if [[ "$version" != "$workspace_version" ]]; then
+            echo "tag $version does not match Cargo.toml ($workspace_version)" >&2
+            exit 1
+          fi
+
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Releasing ${version}"
@@ -70,16 +93,50 @@ jobs:
           file target/release/ddcui-rs >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate desktop file (informational)
-        run: desktop-file-validate packaging/io.github.jerinshop7_maker.DdcuiRs.desktop || true
+      - name: Validate desktop file
+        run: desktop-file-validate packaging/io.github.jerinshop7_maker.DdcuiRs.desktop
 
-      - name: Validate metainfo (informational)
-        run: appstreamcli validate --no-net packaging/io.github.jerinshop7_maker.DdcuiRs.metainfo.xml || true
+      - name: Validate metainfo
+        run: appstreamcli validate --no-net packaging/io.github.jerinshop7_maker.DdcuiRs.metainfo.xml
 
       - name: Build packages
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: bash packaging/build-packages.sh "$VERSION"
+
+      - name: Check the packages are complete
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          deb="dist/ddcui-rs_${VERSION}_amd64.deb"
+          test -f "$deb"
+          dpkg-deb --contents "$deb" | grep -q './usr/bin/ddcui-rs'
+          dpkg-deb --contents "$deb" | grep -q './usr/share/ddcui-rs/plugins/gnome-quick-menu/plugin.json'
+
+          tarball="dist/ddcui-rs-${VERSION}-x86_64-linux.tar.gz"
+          test -f "$tarball"
+          root="ddcui-rs-${VERSION}-x86_64-linux"
+          tar tzf "$tarball" | grep -q "^${root}/ddcui-rs$"
+          tar tzf "$tarball" | grep -q "^${root}/plugins/gnome-quick-menu/plugin.json$"
+
+          appimage="dist/ddcui-rs-${VERSION}-x86_64.AppImage"
+          test -f "$appimage"
+
+          # The shipped binaries have to run: `--help` prints without a display.
+          mkdir -p "$RUNNER_TEMP/check"
+          tar xzf "$tarball" -C "$RUNNER_TEMP/check"
+          "$RUNNER_TEMP/check/$root/ddcui-rs" --help | head -5
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --help | head -5
+
+          echo "All three artifacts unpack and run"
+
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum ./*.tar.gz ./*.deb ./*.AppImage > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -89,6 +146,7 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.AppImage
+            dist/SHA256SUMS
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -97,7 +155,7 @@ jobs:
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
           files=()
-          for f in dist/*.deb dist/*.tar.gz dist/*.AppImage; do
+          for f in dist/*.deb dist/*.tar.gz dist/*.AppImage dist/SHA256SUMS; do
             [ -e "$f" ] && files+=("$f")
           done
           if [ "${#files[@]}" -eq 0 ]; then

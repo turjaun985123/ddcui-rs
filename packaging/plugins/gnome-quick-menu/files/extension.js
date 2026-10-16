@@ -83,33 +83,50 @@ function spawnCommand(command, args) {
     }
 }
 
-/** Read the first monitor's brightness; the callback gets a percentage or null. */
+/** Read the first monitor's brightness.
+ *
+ * The callback gets a percentage or null, plus a short hint to show when the
+ * read failed (a monitor that is switched off, ddcutil missing, ...).
+ */
 function readBrightness(command, callback) {
     let proc;
     try {
         proc = new Gio.Subprocess({
             argv: [command, '--get-brightness'],
-            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
         });
         proc.init(null);
     } catch (e) {
         logError(e, 'ddcui-rs: could not start the command');
-        callback(null);
+        callback(null, 'ddcui-rs could not be started');
         return;
     }
 
     proc.communicate_utf8_async(null, null, (source, result) => {
         let percent = null;
+        let hint = null;
         try {
-            const [, stdout] = source.communicate_utf8_finish(result);
+            const [ok, stdout, stderr] = source.communicate_utf8_finish(result);
             const match = (stdout ?? '').match(/(\d+)\s*%/);
-            if (match)
+            if (ok && match) {
                 percent = Number.parseInt(match[1], 10);
+            } else {
+                hint = firstLine(stderr) ?? 'ddcutil could not read the monitor';
+            }
         } catch (e) {
             logError(e, 'ddcui-rs: could not read the brightness');
+            hint = 'ddcutil could not be run';
         }
-        callback(percent);
+        callback(percent, hint);
     });
+}
+
+/** The first non-empty line of some command output, shortened to fit a menu. */
+function firstLine(text) {
+    const line = (text ?? '').split('\n').map(part => part.trim()).find(Boolean);
+    if (!line)
+        return null;
+    return line.length > 72 ? `${line.slice(0, 69)}…` : line;
 }
 
 const DdcToggle = GObject.registerClass(
@@ -124,9 +141,10 @@ class DdcToggle extends QuickMenuToggle {
         this._command = command;
         this._destroyed = false;
         this._refreshSource = 0;
+        /** The last thing we learned about the monitor, shown in the menu. */
+        this._hint = null;
 
-        this.menu.setHeader('video-display-symbolic', 'Monitor brightness',
-            command ? 'presets are brightness / contrast' : 'install ddcui-rs to use it');
+        this._setHeader();
 
         // The cell behaves like a button: open the window and drop the
         // "pressed" look again. The arrow on the right opens the menu.
@@ -141,6 +159,7 @@ class DdcToggle extends QuickMenuToggle {
     /** (Re)build the menu: saved presets, brightness presets, actions. */
     _buildMenu() {
         this.menu.removeAll();
+        this._setHeader();
 
         if (!this._command) {
             this.menu.addMenuItem(new PopupMenu.PopupMenuItem('ddcui-rs was not found'));
@@ -186,7 +205,9 @@ class DdcToggle extends QuickMenuToggle {
         spawnCommand(this._command, ['--set-brightness', `${profile.brightness}`]);
         if (profile.contrast !== null)
             spawnCommand(this._command, ['--set-contrast', `${profile.contrast}`]);
-        this.subtitle = `brightness ${profile.brightness}%`;
+        // Do not pretend the write worked: the refresh below shows what the
+        // monitor actually reports once ddcutil had time to apply it.
+        this.subtitle = 'setting…';
         this._scheduleRefresh();
     }
 
@@ -194,7 +215,7 @@ class DdcToggle extends QuickMenuToggle {
         if (!this._command)
             return;
         spawnCommand(this._command, ['--set-brightness', `${percent}`]);
-        this.subtitle = `brightness ${percent}%`;
+        this.subtitle = 'setting…';
         this._scheduleRefresh();
     }
 
@@ -214,13 +235,29 @@ class DdcToggle extends QuickMenuToggle {
             return;
         }
 
-        readBrightness(this._command, percent => {
+        readBrightness(this._command, (percent, hint) => {
             if (this._destroyed)
                 return;
-            this.subtitle = percent === null
-                ? 'brightness unknown'
-                : `brightness ${percent}%`;
+            if (percent === null) {
+                this.subtitle = 'brightness unknown';
+                this._hint = hint;
+            } else {
+                this.subtitle = `brightness ${percent}%`;
+                this._hint = null;
+            }
+            this._setHeader();
         });
+    }
+
+    /** The menu header, with whatever we last learned about the monitor. */
+    _setHeader() {
+        if (!this._command) {
+            this.menu.setHeader('video-display-symbolic', 'Monitor brightness',
+                'install ddcui-rs to use it');
+            return;
+        }
+        this.menu.setHeader('video-display-symbolic', 'Monitor brightness',
+            this._hint ?? 'presets are brightness / contrast');
     }
 
     /** Read the monitor again once ddcutil had time to apply a change. */

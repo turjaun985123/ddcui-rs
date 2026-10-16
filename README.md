@@ -21,10 +21,19 @@ CI. See `docs/` and the tracking issues for the parity roadmap.
 * Discovers every DDC/CI monitor the active backend can see.
 * One row per supported continuous VCP feature, with a **draggable level bar**
   (click anywhere to jump to that value, or press and drag to sweep), `−`/`+`
-  stepper buttons in 5% steps, and `0/25/50/75/100` quick-set buttons.
+  stepper buttons in 5 % steps, and `0/25/50/75/100` quick-set buttons.
+* **No waiting on the monitor**: every write runs on a background worker, one
+  command at a time, and repeated changes to the same row are coalesced to the
+  newest value — so dragging the level bar stays smooth even when the monitor
+  answers slowly. The row shows `writing…` while a value is on its way and
+  `write failed` when it did not arrive.
+* **Honest state**: a value that could not be re-read is marked as the last
+  known one instead of being shown as fresh, and the demo backend (used when
+  `ddcutil` is missing) says so in a banner rather than showing invented monitors.
 * **Presets**: capture the current brightness/contrast pair and reapply it to
   every monitor with one click. Stored in
-  `$XDG_CONFIG_HOME/ddcui-rs/profiles.json`.
+  `$XDG_CONFIG_HOME/ddcui-rs/profiles.json`, written atomically, and validated
+  when read (an unreadable file is kept as a backup instead of being overwritten).
 * A draggable title bar with working minimise/close buttons, a refresh button,
   and a status bar that reports the result of every action.
 * **Desktop plugins**: the same binary installs its desktop integrations, so
@@ -73,7 +82,9 @@ cargo run -p ddcui-gpui
 ```
 
 If the `ddcutil` executable is not found, the app falls back to a mock backend so
-the UI is still usable for development.
+the UI is still usable for development; a banner at the top of the window says
+that the monitors are simulated. Command-line mode never does this: it reports
+the real error and exits non-zero.
 
 ## Command line
 
@@ -121,6 +132,30 @@ GNOME Shell only scans for new extensions when it starts, so sign out and back i
 once after the first install; the extension already comes up enabled. The menu
 button then appears without any further setup.
 
+### Is that plugin safe to install?
+
+A plugin copies files into your account, and a shell extension runs inside your
+desktop session, so a plugin is as sensitive as a program. The bundled ones ship
+with the app and install without a warning; plugins that come from
+`$DDCUI_PLUGIN_PATH` or from your own plugin directory are announced (with their
+path) before anything is copied, because that is your call to make.
+
+Whatever the source, `--plugin-install` validates before it touches the disk:
+
+* the extension uuid has to be a plain identifier (no `/`, no `..`, no leading
+  dot, no quotes), so a manifest can never name a directory outside
+  `~/.local/share/gnome-shell/extensions/<uuid>`;
+* the `files` field has to be a relative directory that really is inside the
+  plugin directory, and symlinks are refused rather than followed;
+* the extension is staged in a temporary directory and swapped in, so a failed
+  copy cannot leave a half-written extension behind, and an existing
+  installation is only replaced after the new one is complete;
+* the enabled-extensions list is read before it is written: if it cannot be read,
+  the write is skipped instead of dropping the extensions you already had.
+
+`--plugin-uninstall <id>` only removes the directory named after the validated
+uuid and refuses to guess anywhere else.
+
 ## Install
 
 Prebuilt packages are published on the [Releases](https://github.com/jerinshop7-maker/ddcui-rs/releases)
@@ -129,22 +164,29 @@ page:
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.3.0-x86_64.AppImage
-./ddcui-rs-0.3.0-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.4.0-x86_64.AppImage
+./ddcui-rs-0.4.0-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.3.0_amd64.deb
+sudo apt install ./ddcui-rs_0.4.0_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.3.0-x86_64-linux.tar.gz
-cd ddcui-rs-0.3.0-x86_64-linux
+tar xzf ddcui-rs-0.4.0-x86_64-linux.tar.gz
+cd ddcui-rs-0.4.0-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
+```
+
+Every release also ships a `SHA256SUMS` file, so you can check what you
+downloaded before running it:
+
+```bash
+sha256sum --check SHA256SUMS --ignore-missing
 ```
 
 Every package installs the `ddcui-rs` binary, a `.desktop` entry, an AppStream
