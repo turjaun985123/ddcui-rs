@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/ddc-core", "crates/ddcui-gpui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+authors = ["ddcui-rs contributors"]
+repository = "https://github.com/jerinshop7-maker/ddcui-rs"
+
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+gpui = "0.2.2"
+ddc-core = { path = "crates/ddc-core" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

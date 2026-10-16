@@ -1,0 +1,15 @@
+[package]
+name = "ddcui-gpui"
+description = "GPUI front-end for ddcui-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gpui.workspace = true
+ddc-core.workspace = true
+
+[[bin]]
+name = "ddcui-rs"
+path = "src/main.rs"
