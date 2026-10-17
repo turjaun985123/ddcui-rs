@@ -76,7 +76,7 @@ impl VcpValue {
         if self.max == 0 {
             0
         } else {
-            ((u32::from(self.current) * 100) / u32::from(self.max)) as u8
+            ((u32::from(self.current) * 100) / u32::from(self.max)).min(100) as u8
         }
     }
 

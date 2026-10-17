@@ -17,7 +17,9 @@ mod plugins;
 mod queue;
 mod theme;
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::{
@@ -96,6 +98,8 @@ struct AppState {
     monitors: Vec<MonitorRow>,
     profiles: Vec<Profile>,
     status: String,
+    /// A preset-file problem to show alongside the first refresh result.
+    refresh_note: Option<String>,
     /// A standing warning about the environment, shown above the monitors.
     notice: Option<String>,
     /// Detection or reading failed, so the values below are the last known
@@ -103,6 +107,8 @@ struct AppState {
     stale: bool,
     /// Writes waiting for the worker, at most one per monitor and feature.
     queue: WriteQueue,
+    /// Invalidates older refreshes when the user requests a newer one.
+    refresh_generation: u64,
     /// The write the worker is running right now.
     in_flight: Option<WriteJob>,
     /// The colours of the window.
@@ -112,21 +118,19 @@ struct AppState {
 impl AppState {
     fn new(backend: Arc<dyn DdcBackend>, notice: Option<String>, palette: Palette) -> Self {
         let (profiles, problem) = load_profiles();
-        let mut state = Self {
+        let state = Self {
             backend,
             monitors: Vec::new(),
             profiles,
             status: String::new(),
+            refresh_note: problem,
             notice,
             stale: false,
             queue: WriteQueue::default(),
+            refresh_generation: 0,
             in_flight: None,
             palette,
         };
-        state.refresh();
-        if let Some(problem) = problem {
-            state.status = format!("{problem} · {}", state.status);
-        }
         state
     }
 
@@ -135,60 +139,69 @@ impl AppState {
     /// A monitor list is only replaced once a full read has succeeded, so a
     /// monitor that disappears for a moment leaves the last known values
     /// visible and clearly marked as stale instead of turning into zeros.
-    fn refresh(&mut self) {
-        match self.backend.detect() {
-            Ok(ids) if ids.is_empty() => {
-                self.monitors.clear();
-                self.stale = false;
-                self.status = format!(
-                    "{} backend: no DDC/CI monitors found. \
-                     Is a monitor connected and is DDC/CI enabled in its menu?",
-                    self.backend.name()
-                );
-            }
-            Ok(ids) => {
-                let keys = unique_keys(&ids);
-                let mut monitors = Vec::new();
-                for (id, key) in ids.into_iter().zip(keys) {
-                    let mut features = Vec::new();
-                    for code in FEATURES {
-                        let (value, supported) = match self.backend.get_vcp(&id, code) {
-                            Ok(value) => (value, true),
-                            Err(_) => (
-                                VcpValue {
-                                    code,
-                                    current: 0,
-                                    max: 100,
-                                },
-                                false,
-                            ),
-                        };
-                        features.push(FeatureRow {
-                            value,
-                            supported,
-                            pending: false,
-                            failed: false,
-                        });
-                    }
-                    monitors.push(MonitorRow { id, key, features });
-                }
-                self.monitors = monitors;
-                self.stale = false;
-                self.status = format!(
-                    "{} backend: {} monitor(s).",
-                    self.backend.name(),
-                    self.monitors.len()
-                );
-            }
-            Err(err) => {
-                self.stale = !self.monitors.is_empty();
-                self.status = if self.stale {
-                    format!("Detection failed ({err}); showing the last known values")
-                } else {
-                    format!("Detection failed: {err}")
-                };
-            }
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        let generation = self.refresh_generation;
+        let backend = self.backend.clone();
+        if self.monitors.is_empty() {
+            self.status = format!("{} backend: refreshing monitors…", backend.name());
+        } else {
+            self.status = "Refreshing monitor values…".to_string();
         }
+
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                match backend.detect() {
+                    Ok(ids) if ids.is_empty() => Ok(Vec::new()),
+                    Ok(ids) => {
+                        let keys = unique_keys(&ids);
+                        let mut monitors = Vec::with_capacity(ids.len());
+                        for (id, key) in ids.into_iter().zip(keys) {
+                            let mut features = Vec::with_capacity(FEATURES.len());
+                            for code in FEATURES {
+                                let (value, supported) = match backend.get_vcp(&id, code) {
+                                    Ok(value) => (value, true),
+                                    Err(_) => (VcpValue { code, current: 0, max: 100 }, false),
+                                };
+                                features.push(FeatureRow { value, supported, pending: false, failed: false });
+                            }
+                            monitors.push(MonitorRow { id, key, features });
+                        }
+                        Ok(monitors)
+                    }
+                    Err(err) => Err(err),
+                }
+            }).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.refresh_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(monitors) if monitors.is_empty() => {
+                        state.monitors.clear();
+                        state.stale = false;
+                        state.status = format!("{} backend: no DDC/CI monitors found. Is a monitor connected and is DDC/CI enabled in its menu?", state.backend.name());
+                    }
+                    Ok(monitors) => {
+                        state.monitors = monitors;
+                        state.stale = false;
+                        state.status = format!("{} backend: {} monitor(s).", state.backend.name(), state.monitors.len());
+                    }
+                    Err(err) => {
+                        state.stale = !state.monitors.is_empty();
+                        state.status = if state.stale {
+                            format!("Detection failed ({err}); showing the last known values")
+                        } else {
+                            format!("Detection failed: {err}")
+                        };
+                    }
+                }
+                if let Some(note) = state.refresh_note.take() {
+                    state.status = format!("{note} · {}", state.status);
+                }
+                cx.notify();
+            });
+        }).detach();
     }
 
     /// Where the monitor with this key is in the current list.
@@ -551,7 +564,7 @@ impl AppState {
         let palette = self.palette;
         let refresh = cx.listener(
             |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
-                this.refresh();
+                this.refresh(cx);
                 cx.notify();
             },
         );
@@ -961,14 +974,38 @@ fn store_profiles(profiles: &[Profile]) -> Result<(), String> {
     let text = serde_json::to_string_pretty(profiles)
         .map_err(|err| format!("encoding presets failed: {err}"))?;
 
-    // Write beside the real file and rename it over the old one, so a failing
-    // or interrupted write cannot leave a half-written preset list behind.
-    let temp = path.with_extension("json.new");
-    if let Err(err) = std::fs::write(&temp, text) {
+    // Create a private, unique sibling with create_new so a pre-existing
+    // symlink cannot redirect preset contents into another file.
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let (temp, mut file) = loop {
+        let suffix = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let temp = path.with_file_name(format!("profiles.{}.{}.tmp", std::process::id(), suffix));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp) {
+            Ok(file) => break (temp, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("writing {} failed: {err}", temp.display())),
+        }
+    };
+    if let Err(err) = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        let _ = std::fs::remove_file(&temp);
         return Err(format!("writing {} failed: {err}", temp.display()));
     }
-    std::fs::rename(&temp, &path)
-        .map_err(|err| format!("replacing {} failed: {err}", path.display()))
+    drop(file);
+    if let Err(err) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("replacing {} failed: {err}", path.display()));
+    }
+    Ok(())
 }
 
 /// Minimize the window at the platform level.
@@ -1116,7 +1153,11 @@ fn run_gui(theme: Option<Theme>) {
                 let backend = backend.clone();
                 let notice = notice.clone();
                 move |_window, cx| {
-                    cx.new(|_| AppState::new(backend.clone(), notice.clone(), palette))
+                    cx.new(|cx| {
+                        let mut state = AppState::new(backend.clone(), notice.clone(), palette);
+                        state.refresh(cx);
+                        state
+                    })
                 }
             },
         )
