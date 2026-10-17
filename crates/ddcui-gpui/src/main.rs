@@ -107,8 +107,8 @@ struct AppState {
     stale: bool,
     /// Writes waiting for the worker, at most one per monitor and feature.
     queue: WriteQueue,
-    /// Invalidates older refreshes when the user requests a newer one.
-    refresh_generation: u64,
+    /// Prevents overlapping DDC scans when Refresh is clicked repeatedly.
+    refresh_in_flight: bool,
     /// Detects writes that begin or finish while a refresh is reading hardware.
     write_generation: u64,
     /// The write the worker is running right now.
@@ -129,7 +129,7 @@ impl AppState {
             notice,
             stale: false,
             queue: WriteQueue::default(),
-            refresh_generation: 0,
+            refresh_in_flight: false,
             write_generation: 0,
             in_flight: None,
             palette,
@@ -142,8 +142,10 @@ impl AppState {
     /// monitor that disappears for a moment leaves the last known values
     /// visible and clearly marked as stale instead of turning into zeros.
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.refresh_generation = self.refresh_generation.wrapping_add(1);
-        let generation = self.refresh_generation;
+        if self.refresh_in_flight {
+            return;
+        }
+        self.refresh_in_flight = true;
         let write_generation = self.write_generation;
         let backend = self.backend.clone();
         if self.monitors.is_empty() {
@@ -176,9 +178,7 @@ impl AppState {
                 }
             }).await;
             let _ = this.update(cx, |state, cx| {
-                if state.refresh_generation != generation {
-                    return;
-                }
+                state.refresh_in_flight = false;
                 match result {
                     Ok(monitors) if monitors.is_empty() => {
                         state.monitors.clear();
@@ -623,6 +623,11 @@ impl AppState {
     /// Backend summary plus the refresh control.
     fn render_toolbar(&self, subtitle: String, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = self.palette;
+        let label = if self.refresh_in_flight {
+            "Refreshing…"
+        } else {
+            "Refresh"
+        };
         let refresh = cx.listener(
             |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                 this.refresh(cx);
@@ -643,7 +648,7 @@ impl AppState {
                     .text_color(rgb(palette.text_dim))
                     .child(subtitle),
             )
-            .child(button("Refresh", palette, refresh))
+            .child(button(label, palette, refresh))
     }
 
     /// A standing warning about the environment, when there is one.
