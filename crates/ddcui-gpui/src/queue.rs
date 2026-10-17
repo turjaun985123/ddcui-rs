@@ -8,10 +8,11 @@
 //! The queue is deliberately free of GUI types so it can be tested on its own.
 
 /// A write that has been asked for but not handed to the worker yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteJob {
-    /// Index of the monitor in the window's monitor list.
-    pub monitor: usize,
+    /// The monitor's stable key, so a write cannot land on a different monitor
+    /// when the list is refreshed while the queue is busy.
+    pub key: String,
     /// Index of the feature in that monitor's feature list.
     pub feature: usize,
     /// Value to write, as a percentage of the feature's range.
@@ -34,7 +35,7 @@ impl WriteQueue {
     /// cannot starve another.
     pub fn push(&mut self, job: WriteJob) -> bool {
         for slot in self.jobs.iter_mut() {
-            if slot.monitor == job.monitor && slot.feature == job.feature {
+            if slot.key == job.key && slot.feature == job.feature {
                 *slot = job;
                 return true;
             }
@@ -56,9 +57,9 @@ impl WriteQueue {
 mod tests {
     use super::*;
 
-    fn job(monitor: usize, feature: usize, percent: u8) -> WriteJob {
+    fn job(monitor: &str, feature: usize, percent: u8) -> WriteJob {
         WriteJob {
-            monitor,
+            key: monitor.to_string(),
             feature,
             percent,
             previous: 0,
@@ -69,27 +70,27 @@ mod tests {
     fn a_queued_row_keeps_only_its_newest_value() {
         let mut queue = WriteQueue::default();
 
-        assert!(!queue.push(job(0, 0, 10)));
-        assert!(queue.push(job(0, 0, 20)));
-        assert!(queue.push(job(0, 0, 30)));
+        assert!(!queue.push(job("left", 0, 10)));
+        assert!(queue.push(job("left", 0, 20)));
+        assert!(queue.push(job("left", 0, 30)));
 
-        assert_eq!(queue.pop(), Some(job(0, 0, 30)));
+        assert_eq!(queue.pop(), Some(job("left", 0, 30)));
         assert_eq!(queue.pop(), None);
     }
 
     #[test]
     fn different_rows_are_kept_separately_in_order() {
         let mut queue = WriteQueue::default();
-        queue.push(job(0, 0, 10));
-        queue.push(job(1, 0, 20));
-        queue.push(job(1, 1, 30));
+        queue.push(job("left", 0, 10));
+        queue.push(job("right", 0, 20));
+        queue.push(job("right", 1, 30));
 
         // Refreshing an old row does not move it to the front or drop it.
-        queue.push(job(0, 0, 15));
+        queue.push(job("left", 0, 15));
 
-        assert_eq!(queue.pop(), Some(job(0, 0, 15)));
-        assert_eq!(queue.pop(), Some(job(1, 0, 20)));
-        assert_eq!(queue.pop(), Some(job(1, 1, 30)));
+        assert_eq!(queue.pop(), Some(job("left", 0, 15)));
+        assert_eq!(queue.pop(), Some(job("right", 0, 20)));
+        assert_eq!(queue.pop(), Some(job("right", 1, 30)));
         assert_eq!(queue.pop(), None);
     }
 

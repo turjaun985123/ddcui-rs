@@ -1,65 +1,43 @@
 //! GPUI front-end for `ddcui-rs`.
 //!
 //! This is the Rust/GPUI replacement for the Qt UI in the original `ddcui`.
-//! The window lists every DDC/CI monitor discovered by the active backend and
-//! lets you read and change its continuous VCP features (brightness, contrast)
-//! with a clickable level bar, stepper buttons, quick-set percentages and saved
-//! brightness/contrast presets. The same binary is a headless command line
-//! (`--list`, `--set-brightness`, ...) and installs desktop integrations with
-//! `--plugin-install`.
+//! Every DDC/CI monitor gets a card with its name, where it is attached, and a
+//! level bar per continuous feature (brightness, contrast) that can be clicked,
+//! dragged, stepped and set from quick percentages or saved presets. Writes go
+//! to a background worker, so the window never waits for the monitor.
+//!
+//! The same binary is a headless command line (`--list`, `--set-brightness`,
+//! ...) and installs desktop integrations with `--plugin-install`. Window
+//! colours come from [`theme`], and `--theme`/`DDCUI_THEME`/the desktop can
+//! choose them.
 
 mod cli;
+mod layout;
 mod plugins;
 mod queue;
+mod theme;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, rgb, App, Application, Bounds, Context, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, TitlebarOptions, Window, WindowBounds, WindowDecorations,
-    WindowOptions,
+    div, prelude::*, px, rgb, App, Application, Bounds, Context, FontWeight, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, TitlebarOptions, Window, WindowBounds,
+    WindowDecorations, WindowOptions,
 };
 
 use ddc_core::mock::MockBackend;
-use ddc_core::{DdcBackend, DdcError, DdcutilCli, MonitorId, VcpCode, VcpValue};
+use ddc_core::{unique_keys, DdcBackend, DdcError, DdcutilCli, MonitorId, VcpCode, VcpValue};
 use serde::{Deserialize, Serialize};
 
 use crate::queue::{WriteJob, WriteQueue};
-
-const BG: u32 = 0x18181b;
-const HEADER: u32 = 0x1f1f23;
-const CARD: u32 = 0x27272a;
-const BUTTON: u32 = 0x3f3f46;
-const NOTICE_BG: u32 = 0x422006;
-const NOTICE_TEXT: u32 = 0xfcd34d;
-const FAILED_TEXT: u32 = 0xfca5a5;
-const BUTTON_HOVER: u32 = 0x52525b;
-const TRACK: u32 = 0x0f0f11;
-const ACCENT: u32 = 0x3b82f6;
-const TEXT: u32 = 0xf4f4f5;
-const TEXT_DIM: u32 = 0xa1a1aa;
+use crate::theme::{Palette, Theme};
 
 /// Application id used for window grouping and the desktop entry.
 const APP_ID: &str = "io.github.jerinshop7_maker.DdcuiRs";
 
 /// How far the `-`/`+` buttons move a feature, in percent.
 const STEP: i32 = 5;
-
-/// Space between the window edge and a card: root padding (16) + card padding (12).
-const CONTENT_INSET: f32 = 28.0;
-
-/// Width reserved for a feature's name label, in pixels.
-const NAME_WIDTH: f32 = 76.0;
-
-/// Gap between the elements of a feature row, in pixels.
-const ROW_GAP: f32 = 12.0;
-
-/// Width of a feature's level bar, in pixels.
-const TRACK_WIDTH: f32 = 140.0;
-
-/// Left edge of every level bar, relative to the window, in pixels.
-const TRACK_LEFT: f32 = CONTENT_INSET + NAME_WIDTH + ROW_GAP;
 
 /// Features shown for every monitor, in order.
 const FEATURES: [VcpCode; 2] = [VcpCode::BRIGHTNESS, VcpCode::CONTRAST];
@@ -81,6 +59,9 @@ struct FeatureRow {
 /// One monitor and the features we are showing for it.
 struct MonitorRow {
     id: MonitorId,
+    /// A key that stays the same while the display number may not, so writes
+    /// and (later) per-monitor presets follow the hardware, not the index.
+    key: String,
     features: Vec<FeatureRow>,
 }
 
@@ -124,10 +105,12 @@ struct AppState {
     queue: WriteQueue,
     /// The write the worker is running right now.
     in_flight: Option<WriteJob>,
+    /// The colours of the window.
+    palette: Palette,
 }
 
 impl AppState {
-    fn new(backend: Arc<dyn DdcBackend>, notice: Option<String>) -> Self {
+    fn new(backend: Arc<dyn DdcBackend>, notice: Option<String>, palette: Palette) -> Self {
         let (profiles, problem) = load_profiles();
         let mut state = Self {
             backend,
@@ -138,6 +121,7 @@ impl AppState {
             stale: false,
             queue: WriteQueue::default(),
             in_flight: None,
+            palette,
         };
         state.refresh();
         if let Some(problem) = problem {
@@ -163,8 +147,9 @@ impl AppState {
                 );
             }
             Ok(ids) => {
+                let keys = unique_keys(&ids);
                 let mut monitors = Vec::new();
-                for id in ids {
+                for (id, key) in ids.into_iter().zip(keys) {
                     let mut features = Vec::new();
                     for code in FEATURES {
                         let (value, supported) = match self.backend.get_vcp(&id, code) {
@@ -185,7 +170,7 @@ impl AppState {
                             failed: false,
                         });
                     }
-                    monitors.push(MonitorRow { id, features });
+                    monitors.push(MonitorRow { id, key, features });
                 }
                 self.monitors = monitors;
                 self.stale = false;
@@ -206,6 +191,11 @@ impl AppState {
         }
     }
 
+    /// Where the monitor with this key is in the current list.
+    fn monitor_index(&self, key: &str) -> Option<usize> {
+        self.monitors.iter().position(|row| row.key == key)
+    }
+
     /// The identity, code, and range needed to write a feature, if supported.
     fn target(&self, monitor: usize, feature: usize) -> Option<(MonitorId, VcpCode, u16)> {
         let monitor = self.monitors.get(monitor)?;
@@ -214,12 +204,6 @@ impl AppState {
             return None;
         }
         Some((monitor.id.clone(), feature.value.code, feature.value.max))
-    }
-
-    /// Map a window x coordinate onto a level bar, as a percentage.
-    fn percent_at(x: f32) -> u8 {
-        let fraction = ((x - TRACK_LEFT) / TRACK_WIDTH).clamp(0.0, 1.0);
-        (fraction * 100.0).round() as u8
     }
 
     /// Move a feature by one step in `direction` (-1 or +1).
@@ -260,10 +244,11 @@ impl AppState {
         let percent = percent.min(100);
         let target = VcpValue::from_percent(code, percent, max.max(1)).current;
 
-        let previous = {
+        let (previous, key) = {
             let Some(row) = self.monitors.get_mut(monitor) else {
                 return Requested::Unsupported;
             };
+            let key = row.key.clone();
             let Some(row_feature) = row.features.get_mut(feature) else {
                 return Requested::Unsupported;
             };
@@ -274,18 +259,18 @@ impl AppState {
             row_feature.value.current = target;
             row_feature.pending = true;
             row_feature.failed = false;
-            previous
+            (previous, key)
         };
 
         let job = WriteJob {
-            monitor,
+            key,
             feature,
             percent,
             previous,
         };
         self.queue.push(job);
 
-        let label = self.monitors[monitor].id.label();
+        let label = self.monitors[monitor].id.name();
         self.status = format!("{label}: {} → {percent}%", code.name());
         self.start_write(cx);
         Requested::Queued
@@ -294,33 +279,42 @@ impl AppState {
     /// Hand the next queued write to the background executor.
     ///
     /// Writes run one at a time, in the order they were asked for, so a slow
-    /// monitor cannot be hit by overlapping commands.
+    /// monitor cannot be hit by overlapping commands. A write whose monitor has
+    /// gone away in the meantime is dropped instead of landing on whatever now
+    /// sits at that position in the list.
     fn start_write(&mut self, cx: &mut Context<Self>) {
         if self.in_flight.is_some() {
             return;
         }
-        let Some(job) = self.queue.pop() else {
-            return;
-        };
-        let Some((id, code, max)) = self.target(job.monitor, job.feature) else {
-            return;
-        };
-        let target = VcpValue::from_percent(code, job.percent, max.max(1)).current;
+        loop {
+            let Some(job) = self.queue.pop() else {
+                return;
+            };
+            let Some(index) = self.monitor_index(&job.key) else {
+                self.status = "A monitor went away before its change was written".to_string();
+                continue;
+            };
+            let Some((id, code, max)) = self.target(index, job.feature) else {
+                continue;
+            };
+            let target = VcpValue::from_percent(code, job.percent, max.max(1)).current;
 
-        self.in_flight = Some(job);
+            self.in_flight = Some(job.clone());
 
-        let backend = self.backend.clone();
-        cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move { backend.set_vcp(&id, code, target) })
-                .await;
-            let _ = this.update(cx, |state, cx| {
-                state.finish_write(job, target, outcome, cx);
-                cx.notify();
-            });
-        })
-        .detach();
+            let backend = self.backend.clone();
+            cx.spawn(async move |this, cx| {
+                let outcome = cx
+                    .background_executor()
+                    .spawn(async move { backend.set_vcp(&id, code, target) })
+                    .await;
+                let _ = this.update(cx, |state, cx| {
+                    state.finish_write(job, target, outcome, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
     }
 
     /// Record the result of a finished write and start the next one.
@@ -331,30 +325,39 @@ impl AppState {
         outcome: Result<(), DdcError>,
         cx: &mut Context<Self>,
     ) {
-        let (label, name) = match self.monitors.get(job.monitor) {
-            Some(row) => {
-                let name = row
-                    .features
-                    .get(job.feature)
-                    .map(|feature| feature.value.code.name().to_string())
-                    .unwrap_or_else(|| "feature".to_string());
-                (row.id.label(), name)
-            }
-            None => ("monitor".to_string(), "feature".to_string()),
+        let Some(index) = self.monitor_index(&job.key) else {
+            self.status = match &outcome {
+                Ok(()) => format!(
+                    "A monitor that is no longer listed accepted the change ({}%)",
+                    job.percent
+                ),
+                Err(err) => {
+                    format!("A monitor that is no longer listed rejected the change ({err})")
+                }
+            };
+            self.in_flight = None;
+            self.start_write(cx);
+            return;
         };
 
-        if let Some(row) = self.monitors.get_mut(job.monitor) {
-            if let Some(feature) = row.features.get_mut(job.feature) {
-                feature.pending = false;
-                match &outcome {
-                    Ok(()) => {
-                        feature.value.current = target;
-                        feature.failed = false;
-                    }
-                    Err(_) => {
-                        feature.value.current = job.previous;
-                        feature.failed = true;
-                    }
+        let row = &self.monitors[index];
+        let label = row.id.name();
+        let name = row
+            .features
+            .get(job.feature)
+            .map(|feature| feature.value.code.name().to_string())
+            .unwrap_or_else(|| "feature".to_string());
+
+        if let Some(feature) = self.monitors[index].features.get_mut(job.feature) {
+            feature.pending = false;
+            match &outcome {
+                Ok(()) => {
+                    feature.value.current = target;
+                    feature.failed = false;
+                }
+                Err(_) => {
+                    feature.value.current = job.previous;
+                    feature.failed = true;
                 }
             }
         }
@@ -460,6 +463,7 @@ impl AppState {
 
 impl Render for AppState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette;
         let mut monitors = Vec::new();
         for index in 0..self.monitors.len() {
             monitors.push(self.render_monitor(index, cx));
@@ -477,8 +481,8 @@ impl Render for AppState {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(BG))
-            .text_color(rgb(TEXT))
+            .bg(rgb(palette.bg))
+            .text_color(rgb(palette.text))
             .child(self.render_title_bar())
             .child(self.render_toolbar(subtitle, cx))
             .child(self.render_notice())
@@ -489,7 +493,8 @@ impl Render for AppState {
                     .flex_1()
                     .gap_3()
                     .p_4()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
+                    .scrollbar_width(px(8.0))
                     .children(monitors)
                     .child(self.render_presets(cx)),
             )
@@ -500,6 +505,7 @@ impl Render for AppState {
 impl AppState {
     /// The draggable title bar with the window buttons.
     fn render_title_bar(&self) -> impl IntoElement {
+        let palette = self.palette;
         div()
             .flex()
             .flex_row()
@@ -507,7 +513,7 @@ impl AppState {
             .justify_between()
             .px_4()
             .py_2()
-            .bg(rgb(HEADER))
+            .bg(rgb(palette.header))
             .child(
                 div()
                     .flex()
@@ -521,9 +527,9 @@ impl AppState {
                     .child(div().text_lg().child("ddcui-rs"))
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(TEXT_DIM))
-                            .child("drag here to move the window · click a level bar to set it"),
+                            .text_size(px(11.0))
+                            .text_color(rgb(palette.text_dim))
+                            .child("drag here to move · click a level bar to set it"),
                     ),
             )
             .child(
@@ -532,13 +538,14 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .child(window_button("–", minimize_window))
-                    .child(window_button("✕", close_window)),
+                    .child(window_button("–", palette, minimize_window))
+                    .child(window_button("✕", palette, close_window)),
             )
     }
 
     /// Backend summary plus the refresh control.
     fn render_toolbar(&self, subtitle: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette;
         let refresh = cx.listener(
             |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                 this.refresh();
@@ -556,10 +563,10 @@ impl AppState {
             .child(
                 div()
                     .text_size(px(12.0))
-                    .text_color(rgb(TEXT_DIM))
+                    .text_color(rgb(palette.text_dim))
                     .child(subtitle),
             )
-            .child(button("Refresh", refresh))
+            .child(button("Refresh", palette, refresh))
     }
 
     /// A standing warning about the environment, when there is one.
@@ -568,51 +575,80 @@ impl AppState {
     /// exactly the kind of thing that ends up in a bug report as "the app shows
     /// a monitor I do not have".
     fn render_notice(&self) -> impl IntoElement {
+        let palette = self.palette;
         let mut banner = div().flex().flex_row().gap_2().text_size(px(12.0));
         if let Some(text) = self.notice.as_deref() {
             banner = banner
                 .px_4()
                 .py_2()
-                .bg(rgb(NOTICE_BG))
-                .text_color(rgb(NOTICE_TEXT))
+                .bg(rgb(palette.notice_bg))
+                .text_color(rgb(palette.notice_text))
                 .child("⚠")
                 .child(text.to_string());
         }
         banner
     }
 
+    /// One monitor card: what it is, where it is attached, and its features.
     fn render_monitor(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette;
         let monitor = &self.monitors[index];
-        let title = monitor.id.label();
-        let display = monitor.id.display;
-        let feature_count = monitor.features.len();
+        let title = monitor.id.name();
+        let detail = monitor.id.detail();
+        let stale = self.stale;
 
         let mut features = Vec::new();
-        for feature in 0..feature_count {
+        for feature in 0..monitor.features.len() {
             features.push(self.render_feature(index, feature, cx));
         }
+
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            );
+        if stale {
+            header = header.child(
+                div()
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(palette.surface_alt))
+                    .text_size(px(10.0))
+                    .text_color(rgb(palette.pending))
+                    .child("last known"),
+            );
+        }
+        header = header.child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.0))
+                .text_color(rgb(palette.text_dim))
+                .child(detail),
+        );
 
         div()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .bg(rgb(CARD))
-            .rounded_md()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(div().child(title))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(TEXT_DIM))
-                            .child(format!("display {display}")),
-                    ),
-            )
+            .gap_3()
+            .w(px(layout::CARD_WIDTH))
+            .p(px(layout::CARD_PADDING))
+            .bg(rgb(palette.surface))
+            .border_1()
+            .border_color(rgb(palette.border))
+            .rounded_lg()
+            .child(header)
             .children(features)
     }
 
@@ -622,19 +658,11 @@ impl AppState {
         feature: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let palette = self.palette;
         let row = &self.monitors[monitor].features[feature];
         let name = row.value.code.name();
         let supported = row.supported;
         let percent = u32::from(row.value.percent());
-        let (state_text, state_color) = if !supported {
-            (String::new(), TEXT_DIM)
-        } else if row.failed {
-            ("write failed".to_string(), FAILED_TEXT)
-        } else if row.pending {
-            ("writing…".to_string(), TEXT_DIM)
-        } else {
-            (String::new(), TEXT_DIM)
-        };
 
         if !supported {
             return div()
@@ -644,17 +672,25 @@ impl AppState {
                 .gap_3()
                 .child(
                     div()
-                        .w(px(NAME_WIDTH))
-                        .text_color(rgb(TEXT_DIM))
+                        .text_size(px(12.0))
+                        .text_color(rgb(palette.text_dim))
                         .child(name),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .text_color(rgb(TEXT_DIM))
+                        .text_size(px(11.0))
+                        .text_color(rgb(palette.text_dim))
                         .child("not reported by this monitor"),
                 );
         }
+
+        let (state_text, state_color) = if row.failed {
+            ("write failed".to_string(), palette.failed)
+        } else if row.pending {
+            ("writing…".to_string(), palette.pending)
+        } else {
+            (String::new(), palette.pending)
+        };
 
         let decrease = cx.listener(
             move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
@@ -669,13 +705,13 @@ impl AppState {
             },
         );
         let click = cx.listener(move |this: &mut Self, event: &MouseDownEvent, _, cx| {
-            let percent = Self::percent_at(f32::from(event.position.x));
+            let percent = layout::percent_at(f32::from(event.position.x));
             this.request_percent(monitor, feature, percent, cx);
             cx.notify();
         });
         let drag = cx.listener(move |this: &mut Self, event: &MouseMoveEvent, _, cx| {
             if event.pressed_button == Some(MouseButton::Left) {
-                let percent = Self::percent_at(f32::from(event.position.x));
+                let percent = layout::percent_at(f32::from(event.position.x));
                 this.request_percent(monitor, feature, percent, cx);
                 cx.notify();
             }
@@ -683,49 +719,73 @@ impl AppState {
 
         div()
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
-                    .w(px(NAME_WIDTH))
-                    .text_color(rgb(TEXT_DIM))
-                    .child(name),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(palette.text_dim))
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("{percent}%")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(rgb(state_color))
+                            .child(state_text),
+                    )
+                    .child(div().flex_1())
+                    .child(button("−", palette, decrease))
+                    .child(button("+", palette, increase)),
             )
             .child(
                 div()
-                    .w(px(TRACK_WIDTH))
-                    .h(px(22.0))
                     .flex()
                     .items_center()
+                    .w(px(layout::TRACK_WIDTH))
+                    .h(px(layout::TRACK_HEIGHT))
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click)
                     .on_mouse_move(drag)
                     .child(
                         div()
-                            .w(px(TRACK_WIDTH))
-                            .h(px(10.0))
-                            .rounded_md()
-                            .bg(rgb(TRACK))
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .w(px(layout::TRACK_WIDTH))
+                            .h(px(layout::BAR_HEIGHT))
+                            .rounded_lg()
+                            .bg(rgb(palette.track))
                             .child(
                                 div()
-                                    .h(px(10.0))
-                                    .w(px((percent as f32 / 100.0) * TRACK_WIDTH))
-                                    .rounded_md()
-                                    .bg(rgb(ACCENT)),
-                            ),
+                                    .h(px(layout::BAR_HEIGHT))
+                                    .w(px(layout::fill_width(row.value.percent())))
+                                    .rounded_lg()
+                                    .bg(rgb(palette.accent)),
+                            )
+                            .children((0..layout::TICKS.len()).map(|index| {
+                                div()
+                                    .absolute()
+                                    .left(px(layout::tick_offset(index)))
+                                    .top(px((layout::BAR_HEIGHT - layout::TICK_HEIGHT) / 2.0))
+                                    .w(px(layout::TICK_WIDTH))
+                                    .h(px(layout::TICK_HEIGHT))
+                                    .rounded_xs()
+                                    .bg(rgb(palette.border))
+                            })),
                     ),
             )
-            .child(div().w(px(40.0)).child(format!("{percent}%")))
-            .child(
-                div()
-                    .w(px(64.0))
-                    .text_size(px(11.0))
-                    .text_color(rgb(state_color))
-                    .child(state_text),
-            )
-            .child(button("−", decrease))
-            .child(button("+", increase))
             .child(self.render_presets_row(monitor, feature, cx))
     }
 
@@ -736,7 +796,8 @@ impl AppState {
         feature: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut row = div().flex().flex_row().gap_1();
+        let palette = self.palette;
+        let mut row = div().flex().flex_row().items_center().gap_1();
         for preset in PRESETS {
             let listener = cx.listener(
                 move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
@@ -744,7 +805,7 @@ impl AppState {
                     cx.notify();
                 },
             );
-            row = row.child(chip(preset.to_string(), listener));
+            row = row.child(chip(preset.to_string(), palette, listener));
         }
         row
     }
@@ -752,6 +813,7 @@ impl AppState {
     /// Saved brightness/contrast presets, plus a button to capture the current
     /// values.
     fn render_presets(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette;
         let save = cx.listener(
             |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
                 this.save_profile();
@@ -759,12 +821,12 @@ impl AppState {
             },
         );
 
-        let mut body = div().flex().flex_row().flex_wrap().gap_2();
+        let mut body = div().flex().flex_row().flex_wrap().items_center().gap_2();
         if self.profiles.is_empty() {
             body = body.child(
                 div()
                     .text_size(px(12.0))
-                    .text_color(rgb(TEXT_DIM))
+                    .text_color(rgb(palette.text_dim))
                     .child("No presets yet — set brightness and contrast, then Save current."),
             );
         }
@@ -781,36 +843,44 @@ impl AppState {
                     cx.notify();
                 },
             );
-            body = body.child(chip(profile.label(), apply));
-            body = body.child(button("✕", remove));
+            body = body.child(chip(profile.label(), palette, apply));
+            body = body.child(button("✕", palette, remove));
         }
 
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .p_3()
-            .bg(rgb(CARD))
-            .rounded_md()
+            .w(px(layout::CARD_WIDTH))
+            .p(px(layout::CARD_PADDING))
+            .bg(rgb(palette.surface))
+            .border_1()
+            .border_color(rgb(palette.border))
+            .rounded_lg()
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .child(div().child("Presets (brightness/contrast)"))
-                    .child(button("Save current", save)),
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .child("Presets (brightness/contrast)"),
+                    )
+                    .child(button("Save current", palette, save)),
             )
             .child(body)
     }
 
     fn render_status_bar(&self) -> impl IntoElement {
+        let palette = self.palette;
         div()
             .px_4()
             .py_2()
-            .bg(rgb(HEADER))
+            .bg(rgb(palette.header))
             .text_size(px(12.0))
-            .text_color(rgb(TEXT_DIM))
+            .text_color(rgb(palette.text_dim))
             .child(self.status.clone())
     }
 }
@@ -911,15 +981,16 @@ fn close_window(_: &MouseUpEvent, window: &mut Window, _: &mut App) {
 /// A minimize/close button that drives the platform window directly.
 fn window_button(
     label: &'static str,
+    palette: Palette,
     on_click: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .px_3()
         .py_1()
         .rounded_md()
-        .bg(rgb(BUTTON))
+        .bg(rgb(palette.chip))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(BUTTON_HOVER)))
+        .hover(move |style| style.bg(rgb(palette.chip_hover)))
         .on_mouse_up(MouseButton::Left, on_click)
         .child(label)
 }
@@ -927,15 +998,17 @@ fn window_button(
 /// A normal action button.
 fn button(
     label: &'static str,
+    palette: Palette,
     on_click: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .px_3()
         .py_1()
         .rounded_md()
-        .bg(rgb(BUTTON))
+        .bg(rgb(palette.chip))
+        .text_size(px(12.0))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(BUTTON_HOVER)))
+        .hover(move |style| style.bg(rgb(palette.chip_hover)))
         .on_mouse_up(MouseButton::Left, on_click)
         .child(label)
 }
@@ -943,16 +1016,17 @@ fn button(
 /// A compact button used for the quick-set percentages and presets.
 fn chip(
     label: String,
+    palette: Palette,
     on_click: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .px_2()
         .py_1()
         .rounded_md()
-        .bg(rgb(BUTTON))
+        .bg(rgb(palette.chip))
         .text_size(px(12.0))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(BUTTON_HOVER)))
+        .hover(move |style| style.bg(rgb(palette.chip_hover)))
         .on_mouse_up(MouseButton::Left, on_click)
         .child(label)
 }
@@ -995,23 +1069,33 @@ fn main() {
         }
     };
 
-    if command != cli::Command::Gui {
-        let backend = real_backend();
-        std::process::exit(cli::run(backend.as_ref(), &command));
+    match command {
+        cli::Command::Gui { theme } => run_gui(theme),
+        command => {
+            let backend = real_backend();
+            std::process::exit(cli::run(backend.as_ref(), &command));
+        }
     }
-
-    run_gui();
 }
 
-fn run_gui() {
+fn run_gui(theme: Option<Theme>) {
     let (backend, notice) = make_backend();
+    let env_theme = std::env::var("DDCUI_THEME").ok();
+    let palette = theme::resolve(theme, env_theme.as_deref());
 
     Application::new().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, gpui::size(px(820.0), px(620.0)), cx);
+        let bounds = Bounds::centered(
+            None,
+            gpui::size(px(layout::WINDOW_WIDTH), px(layout::WINDOW_HEIGHT)),
+            cx,
+        );
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(gpui::size(px(700.0), px(420.0))),
+                window_min_size: Some(gpui::size(
+                    px(layout::WINDOW_MIN_WIDTH),
+                    px(layout::WINDOW_MIN_HEIGHT),
+                )),
                 titlebar: Some(TitlebarOptions {
                     title: Some("ddcui-rs".into()),
                     ..Default::default()
@@ -1028,7 +1112,9 @@ fn run_gui() {
             {
                 let backend = backend.clone();
                 let notice = notice.clone();
-                move |_window, cx| cx.new(|_| AppState::new(backend.clone(), notice.clone()))
+                move |_window, cx| {
+                    cx.new(|_| AppState::new(backend.clone(), notice.clone(), palette))
+                }
             },
         )
         .expect("failed to open window");

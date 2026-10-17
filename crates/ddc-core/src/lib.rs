@@ -19,4 +19,4 @@ pub mod model;
 pub use backend::DdcBackend;
 pub use ddcutil::DdcutilCli;
 pub use error::{DdcError, Result};
-pub use model::{MonitorId, VcpCode, VcpValue};
+pub use model::{unique_keys, MonitorId, VcpCode, VcpValue};

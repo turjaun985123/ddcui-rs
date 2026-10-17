@@ -37,6 +37,25 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.5.0" date="2026-10-17">
+      <description>
+        <p>
+          The window now gives every monitor its own card, with the display
+          number and the connector it is attached to, level bars that carry tick
+          marks, and clearer writing and write-failed states.
+        </p>
+        <p>
+          Light and dark window colours follow the desktop's colour scheme by
+          default and can be chosen with --theme or DDCUI_THEME.
+        </p>
+        <p>
+          Writes are addressed by the monitor's own identity (its EDID serial, or
+          the connector it hangs on) instead of its position in the list, so
+          refreshing the monitor list can no longer send a change to the wrong
+          monitor.
+        </p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-10-17">
       <description>
         <p>

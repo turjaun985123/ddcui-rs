@@ -120,6 +120,89 @@ impl MonitorId {
         }
         label
     }
+
+    /// Manufacturer and model without the connection, e.g. `MSI MP225`.
+    pub fn name(&self) -> String {
+        let manufacturer = self.manufacturer.as_deref().unwrap_or("").trim();
+        let model = self.model.as_deref().unwrap_or("").trim();
+        let name = format!("{manufacturer} {model}").trim().to_string();
+        if name.is_empty() {
+            format!("Display {}", self.display)
+        } else {
+            name
+        }
+    }
+
+    /// Where the monitor is attached, e.g. `display 1 · card1-HDMI-A-1`.
+    pub fn detail(&self) -> String {
+        let mut parts = vec![format!("display {}", self.display)];
+        if let Some(connector) = self
+            .connector
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(connector.to_string());
+        }
+        if let Some(bus) = self.bus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            parts.push(bus.to_string());
+        }
+        parts.join(" · ")
+    }
+
+    /// A key that stays the same for one physical monitor.
+    ///
+    /// The display number is handed out in the order monitors are found, so it
+    /// is only the last resort: the serial number in the EDID names the monitor
+    /// itself, and the connector names the port it is plugged into.
+    pub fn key(&self) -> String {
+        let serial = self.serial.as_deref().unwrap_or("").trim();
+        if !serial.is_empty() {
+            let manufacturer = self
+                .manufacturer
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let model = self.model.as_deref().unwrap_or("").trim().to_lowercase();
+            return format!("{manufacturer}:{model}:{serial}");
+        }
+        let connector = self.connector.as_deref().unwrap_or("").trim();
+        if !connector.is_empty() {
+            return format!("connector:{connector}");
+        }
+        let bus = self.bus.as_deref().unwrap_or("").trim();
+        if !bus.is_empty() {
+            return format!("bus:{bus}");
+        }
+        format!("display:{}", self.display)
+    }
+}
+
+/// Keys for a whole monitor list, numbered when two monitors share one.
+///
+/// Two monitors of the same model whose EDID carries no serial number cannot be
+/// told apart, so they keep the order they were found in rather than silently
+/// sharing one identity.
+pub fn unique_keys(monitors: &[MonitorId]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for monitor in monitors {
+        let base = monitor.key();
+        if !keys.contains(&base) {
+            keys.push(base);
+            continue;
+        }
+        let mut number = 2;
+        loop {
+            let candidate = format!("{base}#{number}");
+            if !keys.contains(&candidate) {
+                keys.push(candidate);
+                break;
+            }
+            number += 1;
+        }
+    }
+    keys
 }
 
 #[cfg(test)]
@@ -181,5 +264,82 @@ mod tests {
             serial: Some("ABC".into()),
         };
         assert_eq!(monitor.label(), "Dell U2419H (card1-HDMI-A-1)");
+    }
+
+    /// A monitor with everything the EDID reports.
+    fn well_known() -> MonitorId {
+        MonitorId {
+            display: 1,
+            bus: Some("/dev/i2c-4".into()),
+            connector: Some("card1-HDMI-A-1".into()),
+            manufacturer: Some("MSI".into()),
+            model: Some("MP225".into()),
+            serial: Some("PC6M076302771".into()),
+        }
+    }
+
+    #[test]
+    fn name_and_detail_describe_a_card() {
+        let monitor = well_known();
+        assert_eq!(monitor.name(), "MSI MP225");
+        assert_eq!(monitor.detail(), "display 1 · card1-HDMI-A-1 · /dev/i2c-4");
+        assert_eq!(monitor.key(), "msi:mp225:PC6M076302771");
+    }
+
+    #[test]
+    fn the_key_survives_a_new_display_number() {
+        let mut monitor = well_known();
+        let before = monitor.key();
+        monitor.display = 2;
+        assert_eq!(monitor.key(), before);
+    }
+
+    #[test]
+    fn the_key_falls_back_from_serial_to_connection_to_bus() {
+        let mut monitor = well_known();
+        monitor.serial = None;
+        assert_eq!(monitor.key(), "connector:card1-HDMI-A-1");
+        monitor.connector = None;
+        assert_eq!(monitor.key(), "bus:/dev/i2c-4");
+        monitor.bus = None;
+        assert_eq!(monitor.key(), "display:1");
+    }
+
+    #[test]
+    fn identical_monitors_get_their_own_keys() {
+        let mut monitor = well_known();
+        monitor.serial = None;
+        let mut second = monitor.clone();
+        second.display = 2;
+        let mut third = monitor.clone();
+        third.display = 3;
+        third.connector = Some("card1-HDMI-A-2".into());
+
+        let keys = unique_keys(&[monitor.clone(), second, third]);
+        assert_eq!(
+            keys,
+            vec![
+                "connector:card1-HDMI-A-1".to_string(),
+                "connector:card1-HDMI-A-1#2".to_string(),
+                "connector:card1-HDMI-A-2".to_string(),
+            ]
+        );
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn name_falls_back_to_the_display_number() {
+        let monitor = MonitorId {
+            display: 4,
+            bus: None,
+            connector: None,
+            manufacturer: None,
+            model: None,
+            serial: None,
+        };
+        assert_eq!(monitor.name(), "Display 4");
+        assert_eq!(monitor.detail(), "display 4");
+        assert_eq!(monitor.key(), "display:4");
+        assert!(unique_keys(&[]).is_empty());
     }
 }

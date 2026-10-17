@@ -11,12 +11,16 @@
 use ddc_core::{DdcBackend, MonitorId, VcpCode, VcpValue};
 
 use crate::plugins;
+use crate::theme::Theme;
 
 /// What the process was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Open the GUI (the default when no arguments are given).
-    Gui,
+    Gui {
+        /// Window colours, when `--theme` was given.
+        theme: Option<Theme>,
+    },
     /// Print usage information.
     Help,
     /// List the detected monitors.
@@ -67,12 +71,15 @@ COMMANDS:
 
 OPTIONS:
     --display <N>             Only act on monitor N (1-based, see --list)
+    --theme <T>               Window colours: system, light or dark
+                              (system follows the desktop, the default)
 ";
 
 /// Parse command-line arguments (everything after the program name).
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut command: Option<Command> = None;
     let mut display: Option<u32> = None;
+    let mut theme: Option<Theme> = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -81,6 +88,16 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
+            "--theme" => {
+                if theme.is_some() {
+                    return Err("only one --theme may be given".to_string());
+                }
+                let text = take_value(args, &mut index, "--theme")?;
+                theme =
+                    Some(Theme::parse(text).ok_or_else(|| {
+                        format!("unknown theme: {text} (use system, light or dark)")
+                    })?);
+            }
             "--list" => choose(&mut command, Command::List)?,
             "--display" => {
                 if display.is_some() {
@@ -115,8 +132,13 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     }
 
     let Some(mut command) = command else {
-        return Ok(Command::Gui);
+        return Ok(Command::Gui { theme });
     };
+    if theme.is_some() {
+        return Err(
+            "--theme only applies to the window; it cannot be combined with a command".to_string(),
+        );
+    }
     if let Command::Get { display: slot, .. } | Command::Set { display: slot, .. } = &mut command {
         *slot = display;
     }
@@ -187,7 +209,7 @@ fn parse_percent(value: &str) -> Result<u8, String> {
 /// Run a non-GUI command, returning the process exit code.
 pub fn run(backend: &dyn DdcBackend, command: &Command) -> i32 {
     match command {
-        Command::Help | Command::Gui => {
+        Command::Help | Command::Gui { .. } => {
             print!("{HELP}");
             0
         }
@@ -331,7 +353,38 @@ mod tests {
 
     #[test]
     fn no_arguments_open_the_gui() {
-        assert_eq!(parse(&args(&[])).unwrap(), Command::Gui);
+        assert_eq!(parse(&args(&[])).unwrap(), Command::Gui { theme: None });
+    }
+
+    #[test]
+    fn the_theme_is_a_window_option() {
+        assert_eq!(
+            parse(&args(&["--theme", "dark"])).unwrap(),
+            Command::Gui {
+                theme: Some(Theme::Dark)
+            }
+        );
+        assert_eq!(
+            parse(&args(&["--theme", "Light"])).unwrap(),
+            Command::Gui {
+                theme: Some(Theme::Light)
+            }
+        );
+        assert_eq!(
+            parse(&args(&["--theme", "system"])).unwrap(),
+            Command::Gui {
+                theme: Some(Theme::System)
+            }
+        );
+        // It is not a way to change what another command does.
+        assert!(parse(&args(&["--theme", "dark", "--list"])).is_err());
+    }
+
+    #[test]
+    fn odd_theme_values_are_rejected() {
+        assert!(parse(&args(&["--theme"])).is_err());
+        assert!(parse(&args(&["--theme", "sepia"])).is_err());
+        assert!(parse(&args(&["--theme", "dark", "--theme", "light"])).is_err());
     }
 
     #[test]

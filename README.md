@@ -12,21 +12,30 @@ same idea in Rust: a backend-agnostic core crate plus a GPUI desktop front-end.
 
 ## Status
 
-Early port. The DDC/CI core is functional and unit-tested; the GPUI UI covers
-monitor discovery, brightness/contrast control and saved presets and is built in
-CI. See `docs/` and the tracking issues for the parity roadmap.
+Early port. The DDC/CI core is functional and unit-tested; the GPUI window covers
+monitor discovery, brightness/contrast control, saved presets and light/dark
+themes, and is built in CI. See `docs/` and the tracking issues for the parity
+roadmap.
 
 ## Features
 
-* Discovers every DDC/CI monitor the active backend can see.
+* **One card per monitor**, with the monitor's name, its display number and where
+  it is attached (`display 1 · card1-HDMI-A-1`); cards stack and scroll if you
+  have more monitors than fit in the window.
 * One row per supported continuous VCP feature, with a **draggable level bar**
-  (click anywhere to jump to that value, or press and drag to sweep), `−`/`+`
-  stepper buttons in 5 % steps, and `0/25/50/75/100` quick-set buttons.
+  (click anywhere to jump to that value, or press and drag to sweep), tick marks
+  every 25 %, `−`/`+` stepper buttons in 5 % steps, and `0/25/50/75/100`
+  quick-set buttons.
+* **Follows the desktop's colour scheme** — light, dark, or `system` to match
+  GNOME; pick one with `--theme`, `DDCUI_THEME`, or leave it to the desktop.
 * **No waiting on the monitor**: every write runs on a background worker, one
   command at a time, and repeated changes to the same row are coalesced to the
   newest value — so dragging the level bar stays smooth even when the monitor
   answers slowly. The row shows `writing…` while a value is on its way and
   `write failed` when it did not arrive.
+* **Writes follow the hardware, not the list position**: each monitor is
+  addressed by a key built from its EDID serial (falling back to the connector it
+  hangs on), so a refresh can never send a change to the wrong monitor.
 * **Honest state**: a value that could not be re-read is marked as the last
   known one instead of being shown as fresh, and the demo backend (used when
   `ddcutil` is missing) says so in a banner rather than showing invented monitors.
@@ -86,6 +95,10 @@ the UI is still usable for development; a banner at the top of the window says
 that the monitors are simulated. Command-line mode never does this: it reports
 the real error and exits non-zero.
 
+The window follows the desktop's colour scheme. `--theme light`, `--theme dark`
+or `--theme system` overrides it for one run, and `DDCUI_THEME` does the same for
+launches from the desktop menu.
+
 ## Command line
 
 The same binary also works headlessly, which is what the desktop *Quick Actions*
@@ -96,6 +109,7 @@ ddcui-rs --list                     # list monitors
 ddcui-rs --get-brightness           # print current brightness
 ddcui-rs --set-brightness 50        # set brightness to 50%
 ddcui-rs --set-brightness 20 --display 2
+ddcui-rs --theme dark               # open the window in dark colours
 ddcui-rs --plugin-list              # list the desktop plugins
 ddcui-rs --plugin-install gnome-quick-menu
 ddcui-rs --help
@@ -164,21 +178,21 @@ page:
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.4.1-x86_64.AppImage
-./ddcui-rs-0.4.1-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.5.0-x86_64.AppImage
+./ddcui-rs-0.5.0-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.4.1_amd64.deb
+sudo apt install ./ddcui-rs_0.5.0_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.4.1-x86_64-linux.tar.gz
-cd ddcui-rs-0.4.1-x86_64-linux
+tar xzf ddcui-rs-0.5.0-x86_64-linux.tar.gz
+cd ddcui-rs-0.5.0-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 
