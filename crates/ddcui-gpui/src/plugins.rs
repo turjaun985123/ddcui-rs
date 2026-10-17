@@ -293,13 +293,12 @@ fn check_manifest(manifest: &Manifest) -> Result<(), String> {
         || manifest.name.len() > 256
         || manifest.name.chars().any(char::is_control)
     {
-        return Err(
-            "the manifest name must be 1–256 bytes without control characters".to_string(),
-        );
+        return Err("the manifest name must be 1–256 bytes without control characters".to_string());
     }
     if manifest.summary.len() > 1024 || manifest.summary.chars().any(char::is_control) {
         return Err(
-            "the manifest summary must be at most 1024 bytes without control characters".to_string(),
+            "the manifest summary must be at most 1024 bytes without control characters"
+                .to_string(),
         );
     }
     match manifest.kind.as_str() {
@@ -451,7 +450,10 @@ pub fn install(plugin: &Plugin) -> Result<Vec<String>, String> {
     // it silently could discard settings or code unrelated to this package.
     let target_exists = match std::fs::symlink_metadata(&target) {
         Ok(metadata) if !metadata.file_type().is_dir() => {
-            return Err(format!("refusing to replace non-directory {}", target.display()));
+            return Err(format!(
+                "refusing to replace non-directory {}",
+                target.display()
+            ));
         }
         Ok(_) if !is_managed(plugin) => {
             return Err(format!(
@@ -592,7 +594,10 @@ pub fn uninstall(plugin: &Plugin) -> Result<Vec<String>, String> {
         Err(err) => return Err(format!("cannot inspect {}: {err}", target.display())),
     };
     if !metadata.file_type().is_dir() {
-        return Err(format!("refusing to remove non-directory {}", target.display()));
+        return Err(format!(
+            "refusing to remove non-directory {}",
+            target.display()
+        ));
     }
     if !is_managed(plugin) {
         return Err(format!(
@@ -637,9 +642,8 @@ fn copy_dir(source: &Path, target: &Path) -> Result<usize, String> {
 
     let mut copied = 0;
     for entry in entries {
-        let entry = entry.map_err(|err| {
-            format!("cannot read an entry in {}: {err}", source.display())
-        })?;
+        let entry =
+            entry.map_err(|err| format!("cannot read an entry in {}: {err}", source.display()))?;
         let from = entry.path();
         let kind = entry
             .file_type()

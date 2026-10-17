@@ -482,7 +482,8 @@ impl AppState {
     fn save_profile(&mut self) {
         let Some(profile) = self.current_pair() else {
             self.status =
-                "First monitor needs fresh brightness and contrast readings before saving.".to_string();
+                "First monitor needs fresh brightness and contrast readings before saving."
+                    .to_string();
             return;
         };
         let label = profile.label();
@@ -575,12 +576,7 @@ fn merge_pending_features(
             else {
                 continue;
             };
-            if feature.read_failed {
-                feature.value = previous_feature.value;
-                feature.supported = previous_feature.supported;
-                feature.pending = previous_feature.pending;
-                feature.failed = previous_feature.failed;
-            } else if preserve_recent_writes || previous_feature.pending {
+            if feature.read_failed || preserve_recent_writes || previous_feature.pending {
                 feature.value = previous_feature.value;
                 feature.supported = previous_feature.supported;
                 feature.pending = previous_feature.pending;
@@ -1051,7 +1047,9 @@ fn load_profiles() -> (Vec<Profile>, Option<String>) {
         Err(err) => {
             return (
                 Vec::new(),
-                Some(format!("presets could not be read and were left untouched: {err}")),
+                Some(format!(
+                    "presets could not be read and were left untouched: {err}"
+                )),
             );
         }
     };
@@ -1062,7 +1060,9 @@ fn load_profiles() -> (Vec<Profile>, Option<String>) {
     {
         return (
             Vec::new(),
-            Some(format!("presets could not be read and were left untouched: {err}")),
+            Some(format!(
+                "presets could not be read and were left untouched: {err}"
+            )),
         );
     }
     if text.len() as u64 > MAX_PROFILE_FILE_BYTES {
@@ -1094,7 +1094,9 @@ fn load_profiles() -> (Vec<Profile>, Option<String>) {
     let note = if dropped == 0 {
         None
     } else {
-        Some(format!("{dropped} invalid or excess preset(s) were ignored"))
+        Some(format!(
+            "{dropped} invalid or excess preset(s) were ignored"
+        ))
     };
     (profiles, note)
 }
@@ -1176,12 +1178,18 @@ fn store_profiles(profiles: &[Profile]) -> Result<(), String> {
             let (_, dropped) = checked_profiles(existing_profiles.clone());
             if dropped > 0 {
                 preserve_invalid_profiles(&path, existing.as_bytes()).map_err(|err| {
-                    format!("existing presets contain invalid entries; could not preserve them: {err}")
+                    format!(
+                        "existing presets contain invalid entries; could not preserve them: {err}"
+                    )
                 })?;
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(format!("cannot read existing presets; left unchanged: {err}")),
+        Err(err) => {
+            return Err(format!(
+                "cannot read existing presets; left unchanged: {err}"
+            ))
+        }
     }
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
