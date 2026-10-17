@@ -524,4 +524,50 @@ mod tests {
         let command = set_brightness(25, Some(9));
         assert_eq!(run(&backend, &command), 1);
     }
+
+    /// A backend that fails the test if it is asked anything at all.
+    struct MustNotBeAsked;
+
+    impl DdcBackend for MustNotBeAsked {
+        fn name(&self) -> &'static str {
+            "must-not-be-asked"
+        }
+
+        fn is_available(&self) -> bool {
+            panic!("--version asked the backend whether it is available")
+        }
+
+        fn detect(&self) -> ddc_core::Result<Vec<ddc_core::MonitorId>> {
+            panic!("--version asked the backend to detect monitors")
+        }
+
+        fn capabilities(
+            &self,
+            _monitor: &ddc_core::MonitorId,
+        ) -> ddc_core::Result<Vec<ddc_core::VcpCode>> {
+            panic!("--version asked the backend for capabilities")
+        }
+
+        fn get_vcp(
+            &self,
+            _monitor: &ddc_core::MonitorId,
+            _code: ddc_core::VcpCode,
+        ) -> ddc_core::Result<ddc_core::VcpValue> {
+            panic!("--version read a feature")
+        }
+
+        fn set_vcp(
+            &self,
+            _monitor: &ddc_core::MonitorId,
+            _code: ddc_core::VcpCode,
+            _value: u16,
+        ) -> ddc_core::Result<()> {
+            panic!("--version wrote a feature")
+        }
+    }
+
+    #[test]
+    fn version_names_the_program_without_asking_the_monitors() {
+        assert_eq!(run(&MustNotBeAsked, &Command::Version), 0);
+    }
 }
