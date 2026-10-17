@@ -6,7 +6,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::backend::DdcBackend;
@@ -63,7 +63,15 @@ impl DdcutilCli {
 
     /// Run `ddcutil` with a time limit and return its standard output.
     fn run(&self, args: &[&str]) -> Result<String> {
-        let mut child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Put the command in its own process group so a timeout also
+            // terminates helper processes that inherited our output pipes.
+            command.process_group(0);
+        }
+        let mut child = command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -89,14 +97,14 @@ impl DdcutilCli {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
                 Ok(None) => {
-                    let _ = child.kill();
+                    kill_child_tree(&mut child);
                     let _ = child.wait();
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
                     return Err(DdcError::Timeout(self.timeout));
                 }
                 Err(err) => {
-                    let _ = child.kill();
+                    kill_child_tree(&mut child);
                     let _ = child.wait();
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
@@ -145,6 +153,29 @@ impl DdcutilCli {
             std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
         })
     }
+}
+
+/// Kill the command and any helper processes that share its process group.
+#[cfg(unix)]
+fn kill_child_tree(child: &mut Child) {
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+
+    // The child is the process-group leader because `process_group(0)` was set
+    // before spawn. A negative pid targets the whole group.
+    let process_group = -(child.id() as i32);
+    // SAFETY: kill accepts a negative process-group id and does not access
+    // memory through either argument.
+    let _ = unsafe { kill(process_group, SIGKILL) };
+    let _ = child.kill();
+}
+
+/// On non-Unix platforms, stop the direct child process.
+#[cfg(not(unix))]
+fn kill_child_tree(child: &mut Child) {
+    let _ = child.kill();
 }
 
 /// Drain a child pipe while retaining only a bounded amount of output.

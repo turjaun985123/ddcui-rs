@@ -89,7 +89,7 @@ jobs:
     name: desktop plugins (syntax)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # GJS only exists inside a GNOME Shell session, but the extension is
       # plain ESM: `node --check` catches syntax errors, and the manifests are
