@@ -70,6 +70,14 @@ jobs:
       - name: Test
         run: cargo test -p ddcui-gpui
 
+      - name: Upload the debug binary for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddcui-rs-debug-linux-x86_64
+          path: target/debug/ddcui-rs
+          if-no-files-found: error
+          retention-days: 14
+
   plugins:
     name: desktop plugins (syntax)
     runs-on: ubuntu-24.04
