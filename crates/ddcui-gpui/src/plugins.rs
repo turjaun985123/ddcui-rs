@@ -32,7 +32,9 @@
 //!   to stay inside their plugin directory, and symlinks are refused rather
 //!   than followed.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Deserialize;
 
@@ -287,8 +289,18 @@ fn check_manifest(manifest: &Manifest) -> Result<(), String> {
     if manifest.id.is_empty() || !is_plain_name(&manifest.id) {
         return Err(format!("invalid plugin id: {}", manifest.id));
     }
-    if manifest.name.is_empty() {
-        return Err("the manifest has no name".to_string());
+    if manifest.name.trim().is_empty()
+        || manifest.name.len() > 256
+        || manifest.name.chars().any(char::is_control)
+    {
+        return Err(
+            "the manifest name must be 1–256 bytes without control characters".to_string(),
+        );
+    }
+    if manifest.summary.len() > 1024 || manifest.summary.chars().any(char::is_control) {
+        return Err(
+            "the manifest summary must be at most 1024 bytes without control characters".to_string(),
+        );
     }
     match manifest.kind.as_str() {
         "gnome-shell-extension" => {
@@ -314,7 +326,7 @@ pub fn find(id: &str) -> Option<Plugin> {
 /// Whether a plugin is already installed for this user.
 pub fn is_installed(plugin: &Plugin) -> bool {
     match install_target(plugin) {
-        Ok(target) => target.exists(),
+        Ok(target) => std::fs::symlink_metadata(target).is_ok(),
         Err(_) => false,
     }
 }
@@ -322,7 +334,30 @@ pub fn is_installed(plugin: &Plugin) -> bool {
 /// Whether ddcui-rs installed what is in the target directory.
 pub fn is_managed(plugin: &Plugin) -> bool {
     match install_target(plugin) {
-        Ok(target) => target.join(MARKER).is_file(),
+        Ok(target) => {
+            let Ok(target_meta) = std::fs::symlink_metadata(&target) else {
+                return false;
+            };
+            if !target_meta.file_type().is_dir() {
+                return false;
+            }
+            let marker = target.join(MARKER);
+            let Ok(marker_meta) = std::fs::symlink_metadata(&marker) else {
+                return false;
+            };
+            if !marker_meta.file_type().is_file() {
+                return false;
+            }
+            let expected = format!("{}\n{}\n", plugin.manifest.id, plugin.manifest.name);
+            let Ok(file) = std::fs::File::open(marker) else {
+                return false;
+            };
+            let mut contents = String::new();
+            std::io::Read::take(file, expected.len() as u64 + 1)
+                .read_to_string(&mut contents)
+                .is_ok()
+                && contents == expected
+        }
         Err(_) => false,
     }
 }
@@ -412,45 +447,113 @@ pub fn install(plugin: &Plugin) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(&extensions)
         .map_err(|err| format!("cannot create {}: {err}", extensions.display()))?;
 
-    // Install into a staging directory first, then swap it in, so a failed
-    // copy never leaves a half-written extension behind.
-    let staging = extensions.join(format!(".{uuid}.ddcui-rs-staging"));
-    let backup = extensions.join(format!(".{uuid}.ddcui-rs-backup"));
-    let _ = std::fs::remove_dir_all(&staging);
-    let _ = std::fs::remove_dir_all(&backup);
+    // Preserve an extension installed by the user or another tool. Replacing
+    // it silently could discard settings or code unrelated to this package.
+    let target_exists = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err(format!("refusing to replace non-directory {}", target.display()));
+        }
+        Ok(_) if !is_managed(plugin) => {
+            return Err(format!(
+                "{} already exists and is not a ddcui-rs installation; move it aside before installing",
+                target.display()
+            ));
+        }
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(format!("cannot inspect {}: {err}", target.display())),
+    };
+
+    // Claim a unique staging directory rather than deleting a predictable
+    // path that might belong to a user or a previous interrupted install.
+    static NEXT_PLUGIN_TEMP: AtomicU64 = AtomicU64::new(0);
+    let staging = loop {
+        let suffix = NEXT_PLUGIN_TEMP.fetch_add(1, Ordering::Relaxed);
+        let staging = extensions.join(format!(
+            ".{uuid}.ddcui-rs-staging.{}.{}",
+            std::process::id(),
+            suffix
+        ));
+        match std::fs::create_dir(&staging) {
+            Ok(()) => break staging,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("cannot create {}: {err}", staging.display())),
+        }
+    };
+    let backup = if target_exists {
+        loop {
+            let suffix = NEXT_PLUGIN_TEMP.fetch_add(1, Ordering::Relaxed);
+            let backup = extensions.join(format!(
+                ".{uuid}.ddcui-rs-backup.{}.{}",
+                std::process::id(),
+                suffix
+            ));
+            match std::fs::create_dir(&backup) {
+                Ok(()) => break Some(backup),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    return Err(format!("cannot reserve {}: {err}", backup.display()));
+                }
+            }
+        }
+    } else {
+        None
+    };
 
     let copied = match copy_dir(&payload, &staging) {
         Ok(copied) => copied,
         Err(err) => {
             let _ = std::fs::remove_dir_all(&staging);
+            if let Some(backup) = backup.as_ref() {
+                let _ = std::fs::remove_dir_all(backup);
+            }
             return Err(err);
         }
     };
     let marker = format!("{}\n{}\n", plugin.manifest.id, plugin.manifest.name);
-    std::fs::write(staging.join(MARKER), marker)
-        .map_err(|err| format!("cannot write the plugin marker: {err}"))?;
+    if let Err(err) = std::fs::write(staging.join(MARKER), marker) {
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Some(backup) = backup.as_ref() {
+            let _ = std::fs::remove_dir_all(backup);
+        }
+        return Err(format!("cannot write the plugin marker: {err}"));
+    }
 
     let mut steps = Vec::new();
-    if target.exists() {
-        if !is_managed(plugin) {
-            steps.push(format!(
-                "replacing {}, which ddcui-rs did not install",
-                target.display()
-            ));
+    if let Some(backup) = backup.as_ref() {
+        if let Err(err) = std::fs::rename(&target, backup) {
+            let _ = std::fs::remove_dir_all(backup);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!("cannot move {} aside: {err}", target.display()));
         }
-        std::fs::rename(&target, &backup)
-            .map_err(|err| format!("cannot move {} aside: {err}", target.display()))?;
     }
 
     if let Err(err) = std::fs::rename(&staging, &target) {
         // Put the previous installation back before giving up.
-        if backup.exists() {
-            let _ = std::fs::rename(&backup, &target);
-        }
+        let restore_error = backup.as_ref().and_then(|backup| {
+            std::fs::rename(backup, &target).err().map(|restore| {
+                format!(
+                    "; could not restore the previous install, which remains at {}: {restore}",
+                    backup.display()
+                )
+            })
+        });
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(format!("cannot install into {}: {err}", target.display()));
+        return Err(format!(
+            "cannot install into {}: {err}{}",
+            target.display(),
+            restore_error.unwrap_or_default()
+        ));
     }
-    let _ = std::fs::remove_dir_all(&backup);
+    if let Some(backup) = backup.as_ref() {
+        if let Err(err) = std::fs::remove_dir_all(backup) {
+            steps.push(format!(
+                "could not remove the old install backup at {}: {err}",
+                backup.display()
+            ));
+        }
+    }
 
     steps.push(format!("copied {copied} file(s) to {}", target.display()));
     steps.push(enable_extension(&uuid));
@@ -481,27 +584,39 @@ pub fn uninstall(plugin: &Plugin) -> Result<Vec<String>, String> {
     };
     let target = install_target(plugin)?;
 
-    let mut steps = Vec::new();
-    if shell_knows(&uuid) && run_tool("gnome-extensions", &["disable", &uuid]).is_ok() {
-        steps.push(format!("disabled {uuid}"));
+    let metadata = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(vec![format!("{uuid} was not installed")]);
+        }
+        Err(err) => return Err(format!("cannot inspect {}: {err}", target.display())),
+    };
+    if !metadata.file_type().is_dir() {
+        return Err(format!("refusing to remove non-directory {}", target.display()));
     }
-    if disable_setting(&uuid).is_ok() {
-        steps.push(format!("removed {uuid} from the enabled extensions"));
+    if !is_managed(plugin) {
+        return Err(format!(
+            "refusing to remove {} because it is not a ddcui-rs installation",
+            target.display()
+        ));
     }
 
-    if !target.exists() {
-        steps.push(format!("{uuid} was not installed"));
-        return Ok(steps);
-    }
-
-    // The target is always `<extensions>/<uuid>` with a validated uuid, so it
-    // cannot point anywhere else; check anyway before removing a tree.
+    // The target is always `<extensions>/<uuid>` with a validated uuid; check
+    // its name again immediately before any shell setting or filesystem change.
     let named_right = target
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name == uuid);
     if !named_right {
         return Err(format!("refusing to remove {}", target.display()));
+    }
+
+    let mut steps = Vec::new();
+    if shell_knows(&uuid) && run_tool("gnome-extensions", &["disable", &uuid]).is_ok() {
+        steps.push(format!("disabled {uuid}"));
+    }
+    if disable_setting(&uuid).is_ok() {
+        steps.push(format!("removed {uuid} from the enabled extensions"));
     }
 
     std::fs::remove_dir_all(&target)
@@ -521,7 +636,10 @@ fn copy_dir(source: &Path, target: &Path) -> Result<usize, String> {
         .map_err(|err| format!("cannot read {}: {err}", source.display()))?;
 
     let mut copied = 0;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!("cannot read an entry in {}: {err}", source.display())
+        })?;
         let from = entry.path();
         let kind = entry
             .file_type()
@@ -762,8 +880,10 @@ pub fn run_list() -> i32 {
 
     println!("{} plugin(s) found:", found.plugins.len());
     for plugin in &found.plugins {
-        let state = if is_installed(plugin) {
+        let state = if is_managed(plugin) {
             "installed"
+        } else if is_installed(plugin) {
+            "present, not managed"
         } else {
             "not installed"
         };

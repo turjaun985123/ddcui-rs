@@ -42,7 +42,8 @@ roadmap.
 * **Presets**: capture the current brightness/contrast pair and reapply it to
   every monitor with one click. Stored in
   `$XDG_CONFIG_HOME/ddcui-rs/profiles.json`, written atomically, and validated
-  when read (an unreadable file is kept as a backup instead of being overwritten).
+  when read. Invalid JSON or entries are preserved as a separate backup before
+  repair; unreadable or oversized files are left untouched.
 * A draggable title bar with working minimise/close buttons, a refresh button,
   and a status bar that reports the result of every action.
 * **Desktop plugins**: the same binary installs its desktop integrations, so
@@ -107,12 +108,9 @@ shows the monitors it can see.
 
 ## Building
 
-This project is developed and tested entirely in CI (GitHub Actions). Locally:
-
-```bash
-cargo build -p ddcui-gpui
-cargo test -p ddc-core
-```
+Builds, tests, linting and verification run in GitHub Actions. Do not run Cargo
+locally for this repository; the CI workflow is the source of verification
+results.
 
 On Linux the GPUI front-end needs the usual desktop build dependencies
 (Wayland/X11, fontconfig/freetype, Vulkan, clang for bindgen). The CI workflow
@@ -120,12 +118,10 @@ installs them; see `.github/workflows/ci.yml`.
 
 ## Running
 
+Install one of the prebuilt packages from [Releases](https://github.com/turjaun985123/ddcui-rs/releases),
+then launch **ddcui-rs** from the desktop menu or run `ddcui-rs` in a terminal.
 Set up per [Requirements](#requirements) first — a monitor with DDC/CI on,
-`ddcutil` installed, and access to its `/dev/i2c-*` bus. Then run:
-
-```bash
-cargo run -p ddcui-gpui
-```
+`ddcutil` installed, and access to its `/dev/i2c-*` bus.
 
 If the `ddcutil` executable is not found, the app falls back to a mock backend so
 the UI is still usable for development; a banner at the top of the window says
@@ -199,14 +195,14 @@ Whatever the source, `--plugin-install` validates before it touches the disk:
   `~/.local/share/gnome-shell/extensions/<uuid>`;
 * the `files` field has to be a relative directory that really is inside the
   plugin directory, and symlinks are refused rather than followed;
-* the extension is staged in a temporary directory and swapped in, so a failed
-  copy cannot leave a half-written extension behind, and an existing
-  installation is only replaced after the new one is complete;
+* the extension is staged in a unique temporary directory and swapped in, so a
+  failed copy cannot leave a half-written extension behind; an existing folder
+  is replaced only when its ownership marker identifies a ddcui-rs install;
 * the enabled-extensions list is read before it is written: if it cannot be read,
   the write is skipped instead of dropping the extensions you already had.
 
-`--plugin-uninstall <id>` only removes the directory named after the validated
-uuid and refuses to guess anywhere else.
+`--plugin-uninstall <id>` only removes a directory with the validated uuid and
+matching ddcui-rs ownership marker; unmanaged folders and symlinks are refused.
 
 ## Install
 

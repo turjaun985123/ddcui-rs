@@ -113,6 +113,11 @@ impl DdcutilCli {
             }
         };
 
+        // A wrapper can exit while a helper it started still holds stdout or
+        // stderr open. Stop anything left in our process group so joining the
+        // pipe readers cannot outlive the command timeout indefinitely.
+        kill_child_tree(&mut child);
+
         let (stdout, stdout_truncated) = stdout_reader
             .join()
             .map_err(|_| DdcError::Parse("stdout reader thread panicked".to_string()))?

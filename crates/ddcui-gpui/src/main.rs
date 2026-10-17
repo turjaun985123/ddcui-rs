@@ -17,8 +17,8 @@ mod plugins;
 mod queue;
 mod theme;
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -47,10 +47,16 @@ const FEATURES: [VcpCode; 2] = [VcpCode::BRIGHTNESS, VcpCode::CONTRAST];
 /// Quick-set percentages offered next to each feature.
 const PRESETS: [u8; 5] = [0, 25, 50, 75, 100];
 
+/// Keep preset loading and the preset controls bounded for damaged files.
+const MAX_PROFILE_FILE_BYTES: u64 = 64 * 1024;
+const MAX_PROFILES: usize = 64;
+
 /// One controllable VCP feature of a monitor.
 struct FeatureRow {
     value: VcpValue,
     supported: bool,
+    /// The latest hardware read failed; `value` may be a retained reading.
+    read_failed: bool,
     /// A write for this row is on its way to the monitor.
     pending: bool,
     /// The last write failed, so the value shown is the requested one, not a
@@ -164,11 +170,26 @@ impl AppState {
                         for (id, key) in ids.into_iter().zip(keys) {
                             let mut features = Vec::with_capacity(FEATURES.len());
                             for code in FEATURES {
-                                let (value, supported) = match backend.get_vcp(&id, code) {
-                                    Ok(value) => (value, true),
-                                    Err(_) => (VcpValue { code, current: 0, max: 100 }, false),
-                                };
-                                features.push(FeatureRow { value, supported, pending: false, failed: false });
+                                let (value, supported, read_failed) =
+                                    match backend.get_vcp(&id, code) {
+                                        Ok(value) => (value, true, false),
+                                        Err(_) => (
+                                            VcpValue {
+                                                code,
+                                                current: 0,
+                                                max: 100,
+                                            },
+                                            false,
+                                            true,
+                                        ),
+                                    };
+                                features.push(FeatureRow {
+                                    value,
+                                    supported,
+                                    read_failed,
+                                    pending: false,
+                                    failed: false,
+                                });
                             }
                             monitors.push(MonitorRow { id, key, features });
                         }
@@ -191,9 +212,26 @@ impl AppState {
                             &state.monitors,
                             state.write_generation != write_generation,
                         );
+                        let failed_reads = monitors
+                            .iter()
+                            .flat_map(|monitor| &monitor.features)
+                            .filter(|feature| feature.read_failed)
+                            .count();
                         state.monitors = monitors;
                         state.stale = false;
-                        state.status = format!("{} backend: {} monitor(s).", state.backend.name(), state.monitors.len());
+                        state.status = if failed_reads == 0 {
+                            format!(
+                                "{} backend: {} monitor(s).",
+                                state.backend.name(),
+                                state.monitors.len()
+                            )
+                        } else {
+                            format!(
+                                "{} · {} monitor(s) · {failed_reads} read failure(s); affected rows show last values.",
+                                state.backend.name(),
+                                state.monitors.len()
+                            )
+                        };
                     }
                     Err(err) => {
                         state.stale = !state.monitors.is_empty();
@@ -394,6 +432,7 @@ impl AppState {
                 match &outcome {
                     Ok(()) => {
                         feature.value.current = target;
+                        feature.read_failed = false;
                         feature.failed = false;
                     }
                     Err(_) => {
@@ -424,7 +463,13 @@ impl AppState {
             monitor
                 .features
                 .iter()
-                .find(|feature| feature.value.code == code && feature.supported)
+                .find(|feature| {
+                    feature.value.code == code
+                        && feature.supported
+                        && !feature.read_failed
+                        && !feature.pending
+                        && !feature.failed
+                })
                 .map(|feature| feature.value.percent())
         };
         Some(Profile {
@@ -436,12 +481,17 @@ impl AppState {
     /// Remember the current brightness/contrast as a preset.
     fn save_profile(&mut self) {
         let Some(profile) = self.current_pair() else {
-            self.status = "No monitor reports both brightness and contrast.".to_string();
+            self.status =
+                "First monitor needs fresh brightness and contrast readings before saving.".to_string();
             return;
         };
         let label = profile.label();
         if self.profiles.contains(&profile) {
             self.status = format!("Preset {label} is already saved");
+            return;
+        }
+        if self.profiles.len() >= MAX_PROFILES {
+            self.status = format!("You can save up to {MAX_PROFILES} presets");
             return;
         }
 
@@ -525,7 +575,12 @@ fn merge_pending_features(
             else {
                 continue;
             };
-            if preserve_recent_writes || previous_feature.pending {
+            if feature.read_failed {
+                feature.value = previous_feature.value;
+                feature.supported = previous_feature.supported;
+                feature.pending = previous_feature.pending;
+                feature.failed = previous_feature.failed;
+            } else if preserve_recent_writes || previous_feature.pending {
                 feature.value = previous_feature.value;
                 feature.supported = previous_feature.supported;
                 feature.pending = previous_feature.pending;
@@ -747,6 +802,11 @@ impl AppState {
         let percent = u32::from(row.value.percent());
 
         if !supported {
+            let hint = if row.read_failed {
+                "read failed"
+            } else {
+                "not reported by this monitor"
+            };
             return div()
                 .flex()
                 .flex_row()
@@ -761,17 +821,22 @@ impl AppState {
                 .child(
                     div()
                         .text_size(px(11.0))
-                        .text_color(rgb(palette.text_dim))
-                        .child("not reported by this monitor"),
+                        .text_color(rgb(if row.read_failed {
+                            palette.failed
+                        } else {
+                            palette.text_dim
+                        }))
+                        .child(hint),
                 );
         }
 
-        let (state_text, state_color) = if row.failed {
-            ("write failed".to_string(), palette.failed)
-        } else if row.pending {
-            ("writing…".to_string(), palette.pending)
-        } else {
-            (String::new(), palette.pending)
+        let (state_text, state_color) = match (row.read_failed, row.failed, row.pending) {
+            (true, true, _) => ("read/write failed".to_string(), palette.failed),
+            (true, _, true) => ("read failed · writing…".to_string(), palette.failed),
+            (true, _, false) => ("read failed · last value".to_string(), palette.failed),
+            (false, true, _) => ("write failed".to_string(), palette.failed),
+            (false, false, true) => ("writing…".to_string(), palette.pending),
+            (false, false, false) => (String::new(), palette.pending),
         };
 
         let decrease = cx.listener(
@@ -975,28 +1040,51 @@ fn profiles_path() -> Option<PathBuf> {
     Some(base.join("ddcui-rs").join("profiles.json"))
 }
 
-/// Read the saved presets, reporting anything that had to be repaired.
+/// Read saved presets without consuming unbounded memory or hiding file errors.
 fn load_profiles() -> (Vec<Profile>, Option<String>) {
     let Some(path) = profiles_path() else {
         return (Vec::new(), None);
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (Vec::new(), None);
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
+        Err(err) => {
+            return (
+                Vec::new(),
+                Some(format!("presets could not be read and were left untouched: {err}")),
+            );
+        }
     };
+    let mut text = String::new();
+    if let Err(err) = file
+        .take(MAX_PROFILE_FILE_BYTES + 1)
+        .read_to_string(&mut text)
+    {
+        return (
+            Vec::new(),
+            Some(format!("presets could not be read and were left untouched: {err}")),
+        );
+    }
+    if text.len() as u64 > MAX_PROFILE_FILE_BYTES {
+        return (
+            Vec::new(),
+            Some(format!(
+                "presets file exceeds {MAX_PROFILE_FILE_BYTES} bytes and was left untouched"
+            )),
+        );
+    }
 
     let parsed: Vec<Profile> = match serde_json::from_str(&text) {
         Ok(profiles) => profiles,
         Err(err) => {
-            // Keep a copy for the user instead of silently overwriting a file
-            // that could not be understood.
-            let backup = path.with_extension("json.invalid");
-            let note = if std::fs::copy(&path, &backup).is_ok() {
-                format!(
-                    "presets could not be read ({err}); a copy was kept at {}",
+            let note = match preserve_invalid_profiles(&path, text.as_bytes()) {
+                Ok(backup) => format!(
+                    "presets are invalid ({err}); the original was kept at {}",
                     backup.display()
-                )
-            } else {
-                format!("presets could not be read: {err}")
+                ),
+                Err(backup_err) => format!(
+                    "presets are invalid ({err}); could not preserve a backup: {backup_err}"
+                ),
             };
             return (Vec::new(), Some(note));
         }
@@ -1006,9 +1094,7 @@ fn load_profiles() -> (Vec<Profile>, Option<String>) {
     let note = if dropped == 0 {
         None
     } else {
-        Some(format!(
-            "{dropped} preset(s) with out-of-range values were ignored"
-        ))
+        Some(format!("{dropped} invalid or excess preset(s) were ignored"))
     };
     (profiles, note)
 }
@@ -1018,7 +1104,7 @@ fn checked_profiles(profiles: Vec<Profile>) -> (Vec<Profile>, usize) {
     let mut kept = Vec::new();
     let mut dropped = 0;
     for profile in profiles {
-        if profile.brightness <= 100 && profile.contrast <= 100 {
+        if profile.brightness <= 100 && profile.contrast <= 100 && kept.len() < MAX_PROFILES {
             kept.push(profile);
         } else {
             dropped += 1;
@@ -1027,11 +1113,76 @@ fn checked_profiles(profiles: Vec<Profile>) -> (Vec<Profile>, usize) {
     (kept, dropped)
 }
 
+/// Preserve invalid preset bytes without following or replacing an existing path.
+fn preserve_invalid_profiles(path: &Path, contents: &[u8]) -> Result<PathBuf, String> {
+    let first = path.with_extension("json.invalid");
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("profiles.json");
+    let mut suffix = 0_u64;
+    loop {
+        let backup = if suffix == 0 {
+            first.clone()
+        } else {
+            path.with_file_name(format!("{filename}.invalid.{suffix}"))
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&backup) {
+            Ok(mut file) => {
+                if let Err(err) = file.write_all(contents).and_then(|()| file.sync_all()) {
+                    let _ = std::fs::remove_file(&backup);
+                    return Err(format!("{}: {err}", backup.display()));
+                }
+                return Ok(backup);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                suffix = suffix.wrapping_add(1);
+            }
+            Err(err) => return Err(format!("{}: {err}", backup.display())),
+        }
+    }
+}
+
 /// Write the presets to disk, replacing the file atomically.
 fn store_profiles(profiles: &[Profile]) -> Result<(), String> {
     let Some(path) = profiles_path() else {
         return Ok(());
     };
+    if profiles.len() > MAX_PROFILES {
+        return Err(format!("at most {MAX_PROFILES} presets can be saved"));
+    }
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            let mut existing = String::new();
+            file.take(MAX_PROFILE_FILE_BYTES + 1)
+                .read_to_string(&mut existing)
+                .map_err(|err| format!("cannot read existing presets; left unchanged: {err}"))?;
+            if existing.len() as u64 > MAX_PROFILE_FILE_BYTES {
+                return Err(format!(
+                    "existing presets exceed {MAX_PROFILE_FILE_BYTES} bytes; left unchanged"
+                ));
+            }
+            let existing_profiles: Vec<Profile> =
+                serde_json::from_str(&existing).map_err(|err| {
+                    format!("existing presets are invalid and were left unchanged: {err}")
+                })?;
+            let (_, dropped) = checked_profiles(existing_profiles.clone());
+            if dropped > 0 {
+                preserve_invalid_profiles(&path, existing.as_bytes()).map_err(|err| {
+                    format!("existing presets contain invalid entries; could not preserve them: {err}")
+                })?;
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("cannot read existing presets; left unchanged: {err}")),
+    }
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             return Err(format!("{}: {err}", parent.display()));

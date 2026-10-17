@@ -17,7 +17,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
 const BRIGHTNESS_PRESETS = [0, 25, 50, 75, 100];
-const REFRESH_DELAY_SECONDS = 2;
+const MAX_PROFILE_BYTES = 64 * 1024;
+const MAX_PROFILES = 64;
 
 /** The ddcui-rs command: `PATH` first, then the usual install locations. */
 function findCommand() {
@@ -41,6 +42,9 @@ function findCommand() {
 function readTextFile(path) {
     try {
         const file = Gio.File.new_for_path(path);
+        const info = file.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null);
+        if (info.get_size() > MAX_PROFILE_BYTES)
+            return null;
         const [ok, contents] = file.load_contents(null);
         return ok ? new TextDecoder().decode(contents) : null;
     } catch {
@@ -67,58 +71,68 @@ function loadProfiles() {
         return [];
 
     return parsed
-        .filter(profile => Number.isInteger(profile?.brightness))
+        .filter(profile => Number.isInteger(profile?.brightness) &&
+            profile.brightness >= 0 && profile.brightness <= 100 &&
+            (profile.contrast === null || profile.contrast === undefined ||
+                (Number.isInteger(profile.contrast) && profile.contrast >= 0 &&
+                    profile.contrast <= 100)))
+        .slice(0, MAX_PROFILES)
         .map(profile => ({
             brightness: profile.brightness,
             contrast: Number.isInteger(profile.contrast) ? profile.contrast : null,
         }));
 }
 
-/** Run ddcui-rs in the background and ignore the result. */
-function spawnCommand(command, args) {
-    try {
-        Util.spawn([command, ...args]);
-    } catch (e) {
-        logError(e, 'ddcui-rs: could not run the command');
-    }
+/** Run a ddcui-rs command and report its exit status and captured output. */
+function runCommand(command, args) {
+    return new Promise((resolve, reject) => {
+        let proc;
+        try {
+            proc = new Gio.Subprocess({
+                argv: [command, ...args],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            proc.init(null);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+
+        proc.communicate_utf8_async(null, null, (source, result) => {
+            try {
+                const [ok, stdout, stderr] = source.communicate_utf8_finish(result);
+                if (!ok) {
+                    reject(new Error(firstLine(stderr) ?? 'could not read command output'));
+                } else if (!source.get_successful()) {
+                    reject(new Error(firstLine(stderr) ?? 'ddcui-rs command failed'));
+                } else {
+                    resolve({ stdout: stdout ?? '', stderr: stderr ?? '' });
+                }
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
 }
 
 /** Read the first monitor's brightness.
  *
- * The callback gets a percentage or null, plus a short hint to show when the
- * read failed (a monitor that is switched off, ddcutil missing, ...).
+ * Return a percentage or null, plus a short hint to show when the read failed.
  */
-function readBrightness(command, callback) {
-    let proc;
+async function readBrightness(command) {
     try {
-        proc = new Gio.Subprocess({
-            argv: [command, '--get-brightness'],
-            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-        });
-        proc.init(null);
-    } catch (e) {
-        logError(e, 'ddcui-rs: could not start the command');
-        callback(null, 'ddcui-rs could not be started');
-        return;
-    }
-
-    proc.communicate_utf8_async(null, null, (source, result) => {
-        let percent = null;
-        let hint = null;
-        try {
-            const [ok, stdout, stderr] = source.communicate_utf8_finish(result);
-            const match = (stdout ?? '').match(/(\d+)\s*%/);
-            if (ok && match) {
-                percent = Number.parseInt(match[1], 10);
-            } else {
-                hint = firstLine(stderr) ?? 'ddcutil could not read the monitor';
-            }
-        } catch (e) {
-            logError(e, 'ddcui-rs: could not read the brightness');
-            hint = 'ddcutil could not be run';
+        const { stdout, stderr } = await runCommand(command, ['--get-brightness']);
+        const match = stdout.match(/(\d+)\s*%/);
+        if (match) {
+            const percent = Number.parseInt(match[1], 10);
+            if (percent >= 0 && percent <= 100)
+                return { percent, hint: null };
         }
-        callback(percent, hint);
-    });
+        return { percent: null, hint: firstLine(stderr) ?? 'ddcutil could not read the monitor' };
+    } catch (e) {
+        logError(e, 'ddcui-rs: could not read monitor brightness');
+        return { percent: null, hint: firstLine(e.message) ?? 'ddcui-rs could not be started' };
+    }
 }
 
 /** The first non-empty line of some command output, shortened to fit a menu. */
@@ -140,7 +154,9 @@ class DdcToggle extends QuickMenuToggle {
 
         this._command = command;
         this._destroyed = false;
-        this._refreshSource = 0;
+        this._refreshGeneration = 0;
+        this._refreshTask = null;
+        this._writeQueue = Promise.resolve();
         /** The last thing we learned about the monitor, shown in the menu. */
         this._hint = null;
 
@@ -191,7 +207,7 @@ class DdcToggle extends QuickMenuToggle {
         refreshItem.connect('activate', () => {
             // Rebuild after the menu has closed and this item is gone.
             GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-                this._refresh();
+                this._refreshWhenIdle();
                 return GLib.SOURCE_REMOVE;
             });
         });
@@ -202,32 +218,94 @@ class DdcToggle extends QuickMenuToggle {
     _applyProfile(profile) {
         if (!this._command)
             return;
-        spawnCommand(this._command, ['--set-brightness', `${profile.brightness}`]);
-        if (profile.contrast !== null)
-            spawnCommand(this._command, ['--set-contrast', `${profile.contrast}`]);
-        // Do not pretend the write worked: the refresh below shows what the
-        // monitor actually reports once ddcutil had time to apply it.
-        this.subtitle = 'setting…';
-        this._scheduleRefresh();
+        this._queueWrite(async () => {
+            await runCommand(this._command, ['--set-brightness', `${profile.brightness}`]);
+            if (profile.contrast !== null)
+                await runCommand(this._command, ['--set-contrast', `${profile.contrast}`]);
+        }, 'could not apply preset');
     }
 
     _setBrightness(percent) {
         if (!this._command)
             return;
-        spawnCommand(this._command, ['--set-brightness', `${percent}`]);
+        this._queueWrite(async () => {
+            await runCommand(this._command, ['--set-brightness', `${percent}`]);
+        }, 'could not set brightness');
+    }
+
+    /** Serialize writes, report errors, and refresh only after the write ends. */
+    _queueWrite(write, failureTitle) {
+        this._refreshGeneration++;
         this.subtitle = 'setting…';
-        this._scheduleRefresh();
+        this._hint = null;
+        this._setHeader();
+
+        this._writeQueue = this._writeQueue
+            .catch(() => {})
+            .then(async () => {
+                if (this._destroyed)
+                    return;
+                const previousRefresh = this._refreshTask;
+                if (previousRefresh)
+                    await previousRefresh;
+                if (this._refreshTask === previousRefresh)
+                    this._refreshTask = null;
+                this.subtitle = 'setting…';
+                this._hint = null;
+                this._setHeader();
+                await write();
+                await this._refresh();
+            })
+            .catch(async e => {
+                if (this._destroyed)
+                    return;
+                const detail = firstLine(e.message) ?? 'ddcui-rs could not apply the change';
+                await this._refresh();
+                if (this._destroyed)
+                    return;
+                this.subtitle = `${this.subtitle} · write failed`;
+                this._hint = `${failureTitle}: ${detail}`;
+                this._setHeader();
+            });
+    }
+
+    /** Let an explicit refresh wait behind any queued hardware changes. */
+    _refreshWhenIdle() {
+        this._writeQueue.then(() => this._refresh());
     }
 
     /** Open the ddcui-rs window. */
     _openWindow() {
         if (!this._command)
             return;
-        spawnCommand(this._command, []);
+        try {
+            Util.spawn([this._command]);
+        } catch (e) {
+            logError(e, 'ddcui-rs: could not open the window');
+        }
     }
 
     /** Update the subtitle and the list of saved presets. */
     _refresh() {
+        if (this._refreshTask)
+            return this._refreshTask;
+
+        const task = this._refreshNow();
+        this._refreshTask = task;
+        task.then(
+            () => {
+                if (this._refreshTask === task)
+                    this._refreshTask = null;
+            },
+            () => {
+                if (this._refreshTask === task)
+                    this._refreshTask = null;
+            });
+        return task;
+    }
+
+    async _refreshNow() {
+        const generation = ++this._refreshGeneration;
         this._buildMenu();
 
         if (!this._command) {
@@ -235,18 +313,17 @@ class DdcToggle extends QuickMenuToggle {
             return;
         }
 
-        readBrightness(this._command, (percent, hint) => {
-            if (this._destroyed)
-                return;
-            if (percent === null) {
-                this.subtitle = 'brightness unknown';
-                this._hint = hint;
-            } else {
-                this.subtitle = `brightness ${percent}%`;
-                this._hint = null;
-            }
-            this._setHeader();
-        });
+        const { percent, hint } = await readBrightness(this._command);
+        if (this._destroyed || generation !== this._refreshGeneration)
+            return;
+        if (percent === null) {
+            this.subtitle = 'brightness unknown';
+            this._hint = hint;
+        } else {
+            this.subtitle = `brightness ${percent}%`;
+            this._hint = null;
+        }
+        this._setHeader();
     }
 
     /** The menu header, with whatever we last learned about the monitor. */
@@ -260,25 +337,9 @@ class DdcToggle extends QuickMenuToggle {
             this._hint ?? 'presets are brightness / contrast');
     }
 
-    /** Read the monitor again once ddcutil had time to apply a change. */
-    _scheduleRefresh() {
-        if (this._refreshSource !== 0)
-            GLib.source_remove(this._refreshSource);
-
-        this._refreshSource = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT, REFRESH_DELAY_SECONDS, () => {
-                this._refreshSource = 0;
-                this._refresh();
-                return GLib.SOURCE_REMOVE;
-            });
-    }
-
     destroy() {
         this._destroyed = true;
-        if (this._refreshSource !== 0) {
-            GLib.source_remove(this._refreshSource);
-            this._refreshSource = 0;
-        }
+        this._refreshGeneration++;
         super.destroy();
     }
 });
