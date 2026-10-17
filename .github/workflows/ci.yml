@@ -70,8 +70,12 @@ jobs:
       - name: Test
         run: cargo test -p ddcui-gpui
 
-      - name: Upload the debug binary for inspection
-        uses: actions/upload-artifact@v4
+      - name: Strip the debug binary for the artifact
+        run: |
+          strip --strip-debug target/debug/ddcui-rs
+          ls -la target/debug/ddcui-rs
+
+      - uses: actions/upload-artifact@v4
         with:
           name: ddcui-rs-debug-linux-x86_64
           path: target/debug/ddcui-rs
