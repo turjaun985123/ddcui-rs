@@ -9,8 +9,7 @@ on:
         description: "Version to release, e.g. v0.1.0"
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,12 +19,20 @@ jobs:
   package:
     name: build .deb + tarball
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: release
 
@@ -44,10 +51,16 @@ jobs:
 
       - name: Fetch appimagetool
         run: |
+          set -euo pipefail
           curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum --check --strict
+          curl -fsSL -o "$RUNNER_TEMP/appimage-runtime" \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          echo "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  $RUNNER_TEMP/appimage-runtime" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/appimagetool"
           echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+          echo "APPIMAGETOOL_RUNTIME_FILE=$RUNNER_TEMP/appimage-runtime" >> "$GITHUB_ENV"
 
       - name: Resolve version
         id: ver
@@ -151,7 +164,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ddcui-rs-${{ steps.ver.outputs.version }}
           path: |
@@ -161,11 +174,28 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
 
+  publish:
+    name: publish release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ddcui-rs-${{ needs.package.outputs.version }}
+          path: dist
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.ver.outputs.tag }}
+          TAG: ${{ needs.package.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           files=()
           for f in dist/*.deb dist/*.tar.gz dist/*.AppImage dist/SHA256SUMS; do
             [ -e "$f" ] && files+=("$f")
@@ -179,7 +209,7 @@ jobs:
             gh release upload "$TAG" "${files[@]}" --clobber
           else
             target=()
-            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
               target=(--target "$GITHUB_SHA")
             fi
             gh release create "$TAG" "${files[@]}" \
