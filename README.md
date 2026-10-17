@@ -50,6 +50,43 @@ roadmap.
   puts a **brightness button in the GNOME Quick Settings menu** (the top-right
   menu with the power off button) with the presets saved in the window.
 
+## Requirements
+
+**To reach the monitors:**
+
+* an external monitor with **DDC/CI switched on in its own on-screen menu** (it
+  usually is). A cable from the monitor straight to the graphics card is the
+  most reliable path — some KVMs and adapters do not pass DDC/CI through.
+* **`ddcutil`**, the program this app drives (`detect`, `capabilities --brief`,
+  `getvcp`/`setvcp`). Install it with your package manager
+  (`sudo apt install ddcutil`). Developed and tested against version 2.2.5;
+  the interface it uses has been stable for years.
+* **read/write access to the monitor's `/dev/i2c-*` device.** On most
+  distributions ddcutil's udev rule grants the *logged-in* desktop user access
+  to the display buses automatically. If ddcutil says "permission denied"
+  instead, add yourself to the `i2c` group (`sudo usermod -aG i2c "$USER"`)
+  and sign out and back in.
+
+`ddcutil environment` checks all three and names what is missing. Without
+`ddcutil` the window still opens, with a banner saying the monitors are
+simulated; the command line never pretends: it reports the real error.
+
+**To run the window:** any Wayland or X11 desktop with a working **Vulkan
+driver** — on Debian/Ubuntu that is `mesa-vulkan-drivers`. The other libraries
+are the usual desktop ones; the `.deb` lists them all as dependencies.
+
+**For the GNOME Quick Settings button** (`--plugin-install gnome-quick-menu`):
+GNOME Shell **45–50**, and the extension finds the `ddcui-rs` command in `PATH`
+or in `~/.local/bin`, `/usr/local/bin` or `/usr/bin`. GNOME only scans for new
+extensions at startup, so sign out and back in once after installing it.
+
+**AppImage:** needs **FUSE 2** (`libfuse2`/`libfuse2t64`). Without it, run
+`APPIMAGE_EXTRACT_AND_RUN=1 ./ddcui-rs-*.AppImage`, or use the tarball or the
+`.deb`.
+
+Installed already? `ddcui-rs --version` names the version and `ddcui-rs --list`
+shows the monitors it can see.
+
 ## Workspace layout
 
 | Path | What it is |
@@ -83,8 +120,8 @@ installs them; see `.github/workflows/ci.yml`.
 
 ## Running
 
-DDC/CI must be enabled in the monitor's on-screen menu, and the user needs access
-to the `/dev/i2c-*` devices (see the `ddcutil` documentation). Run:
+Set up per [Requirements](#requirements) first — a monitor with DDC/CI on,
+`ddcutil` installed, and access to its `/dev/i2c-*` bus. Then run:
 
 ```bash
 cargo run -p ddcui-gpui
@@ -176,7 +213,8 @@ uuid and refuses to guess anywhere else.
 Prebuilt packages are published on the [Releases](https://github.com/turjaun985123/ddcui-rs/releases)
 page:
 
-**AppImage (no install, one file)** — the easiest option:
+**AppImage (no install, one file)** — the easiest option (it needs FUSE 2; see
+[Requirements](#requirements) for the one-line workaround without it):
 
 ```bash
 chmod +x ddcui-rs-0.5.1-x86_64.AppImage

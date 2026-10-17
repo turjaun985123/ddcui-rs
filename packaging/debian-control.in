@@ -4,9 +4,10 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Depends: ddcutil, libc6 (>= 2.34), libfontconfig1, libwayland-client0, libwayland-cursor0, libxkbcommon0, libx11-6, libvulkan1
-Maintainer: jerinshop7-maker <jerinshop7-maker@users.noreply.github.com>
+Recommends: mesa-vulkan-drivers
+Maintainer: turjaun985123 <turjaun985123@users.noreply.github.com>
 Description: Rust + GPUI monitor control via DDC/CI
  ddcui-rs is a Rust/GPUI reimplementation of ddcui. It reads and changes
  external monitor settings (brightness, contrast, ...) over DDC/CI by driving
  the ddcutil program.
-Homepage: https://github.com/jerinshop7-maker/ddcui-rs
+Homepage: https://github.com/turjaun985123/ddcui-rs
