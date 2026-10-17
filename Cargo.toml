@@ -3,11 +3,11 @@ resolver = "2"
 members = ["crates/ddc-core", "crates/ddcui-gpui"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "GPL-2.0-or-later"
 authors = ["ddcui-rs contributors"]
-repository = "https://github.com/jerinshop7-maker/ddcui-rs"
+repository = "https://github.com/turjaun985123/ddcui-rs"
 
 [workspace.dependencies]
 thiserror = "2"

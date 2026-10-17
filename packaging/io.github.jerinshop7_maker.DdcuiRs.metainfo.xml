@@ -28,15 +28,27 @@
 
   <launchable type="desktop-id">io.github.jerinshop7_maker.DdcuiRs.desktop</launchable>
 
-  <url type="homepage">https://github.com/jerinshop7-maker/ddcui-rs</url>
-  <url type="bugtracker">https://github.com/jerinshop7-maker/ddcui-rs/issues</url>
+  <url type="homepage">https://github.com/turjaun985123/ddcui-rs</url>
+  <url type="bugtracker">https://github.com/turjaun985123/ddcui-rs/issues</url>
 
   <developer_name>ddcui-rs contributors</developer_name>
-  <update_contact>jerinshop7-maker@users.noreply.github.com</update_contact>
+  <update_contact>turjaun985123@users.noreply.github.com</update_contact>
 
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.5.1" date="2026-10-17">
+      <description>
+        <p>
+          The monitor cards are centred in the window: the window is exactly one
+          card wide plus two page paddings, so there is no empty strip down one
+          side any more.
+        </p>
+        <p>
+          The new --version option prints the version of an installed copy.
+        </p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-10-17">
       <description>
         <p>

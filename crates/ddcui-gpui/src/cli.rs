@@ -23,6 +23,8 @@ pub enum Command {
     },
     /// Print usage information.
     Help,
+    /// Print the version.
+    Version,
     /// List the detected monitors.
     List,
     /// Read a feature from every selected monitor.
@@ -68,6 +70,7 @@ COMMANDS:
     --plugin-install <id>     Install a plugin (for example gnome-quick-menu)
     --plugin-uninstall <id>   Remove an installed plugin
     -h, --help                Print this help
+    -V, --version             Print the version
 
 OPTIONS:
     --display <N>             Only act on monitor N (1-based, see --list)
@@ -88,6 +91,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
+            "-V" | "--version" => return Ok(Command::Version),
             "--theme" => {
                 if theme.is_some() {
                     return Err("only one --theme may be given".to_string());
@@ -206,11 +210,20 @@ fn parse_percent(value: &str) -> Result<u8, String> {
     Ok(percent)
 }
 
+/// The line printed by `--version`.
+pub fn version_line() -> String {
+    format!("ddcui-rs {}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Run a non-GUI command, returning the process exit code.
 pub fn run(backend: &dyn DdcBackend, command: &Command) -> i32 {
     match command {
         Command::Help | Command::Gui { .. } => {
             print!("{HELP}");
+            0
+        }
+        Command::Version => {
+            println!("{}", version_line());
             0
         }
         Command::List => run_list(backend),
@@ -391,6 +404,17 @@ mod tests {
     fn help_is_recognised() {
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--help"])).unwrap(), Command::Help);
+    }
+
+    #[test]
+    fn version_is_recognised() {
+        assert_eq!(parse(&args(&["-V"])).unwrap(), Command::Version);
+        assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
+        // The printed line names the program and a version number.
+        let line = version_line();
+        assert!(line.starts_with("ddcui-rs "), "{line}");
+        let number = line.split(' ').nth(1).unwrap_or_default();
+        assert!(number.contains('.'), "{line}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # ddcui-rs
 
-[![CI](https://github.com/jerinshop7-maker/ddcui-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jerinshop7-maker/ddcui-rs/actions/workflows/ci.yml)
+[![CI](https://github.com/turjaun985123/ddcui-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/turjaun985123/ddcui-rs/actions/workflows/ci.yml)
 
 A Rust + [GPUI](https://gpui.rs) port of [`ddcui`](https://github.com/rockowitz/ddcui) —
 a GUI for controlling external monitors over **DDC/CI** (brightness, contrast, and
@@ -112,6 +112,7 @@ ddcui-rs --set-brightness 20 --display 2
 ddcui-rs --theme dark               # open the window in dark colours
 ddcui-rs --plugin-list              # list the desktop plugins
 ddcui-rs --plugin-install gnome-quick-menu
+ddcui-rs --version                  # print the version
 ddcui-rs --help
 ```
 
@@ -172,27 +173,27 @@ uuid and refuses to guess anywhere else.
 
 ## Install
 
-Prebuilt packages are published on the [Releases](https://github.com/jerinshop7-maker/ddcui-rs/releases)
+Prebuilt packages are published on the [Releases](https://github.com/turjaun985123/ddcui-rs/releases)
 page:
 
 **AppImage (no install, one file)** — the easiest option:
 
 ```bash
-chmod +x ddcui-rs-0.5.0-x86_64.AppImage
-./ddcui-rs-0.5.0-x86_64.AppImage            # just run it
+chmod +x ddcui-rs-0.5.1-x86_64.AppImage
+./ddcui-rs-0.5.1-x86_64.AppImage            # just run it
 ```
 
 **Debian / Ubuntu** — install the `.deb` (it pulls `ddcutil` and the desktop runtime libs):
 
 ```bash
-sudo apt install ./ddcui-rs_0.5.0_amd64.deb
+sudo apt install ./ddcui-rs_0.5.1_amd64.deb
 ```
 
 **Any Linux (tarball):**
 
 ```bash
-tar xzf ddcui-rs-0.5.0-x86_64-linux.tar.gz
-cd ddcui-rs-0.5.0-x86_64-linux
+tar xzf ddcui-rs-0.5.1-x86_64-linux.tar.gz
+cd ddcui-rs-0.5.1-x86_64-linux
 sudo ./install.sh            # PREFIX=/usr sudo ./install.sh to match distro paths
 ```
 

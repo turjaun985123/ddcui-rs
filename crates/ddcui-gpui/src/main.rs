@@ -492,7 +492,8 @@ impl Render for AppState {
                     .flex_col()
                     .flex_1()
                     .gap_3()
-                    .p_4()
+                    .py_4()
+                    .px(px(layout::PAGE_PADDING))
                     // Scrolling needs a stateful element, so the list gets an id.
                     .id("monitor-cards")
                     .overflow_y_scroll()
@@ -513,7 +514,7 @@ impl AppState {
             .flex_row()
             .items_center()
             .justify_between()
-            .px_4()
+            .px(px(layout::PAGE_PADDING))
             .py_2()
             .bg(rgb(palette.header))
             .child(
@@ -560,7 +561,7 @@ impl AppState {
             .flex_row()
             .items_center()
             .justify_between()
-            .px_4()
+            .px(px(layout::PAGE_PADDING))
             .py_2()
             .child(
                 div()
@@ -581,7 +582,7 @@ impl AppState {
         let mut banner = div().flex().flex_row().gap_2().text_size(px(12.0));
         if let Some(text) = self.notice.as_deref() {
             banner = banner
-                .px_4()
+                .px(px(layout::PAGE_PADDING))
                 .py_2()
                 .bg(rgb(palette.notice_bg))
                 .text_color(rgb(palette.notice_text))
@@ -878,7 +879,7 @@ impl AppState {
     fn render_status_bar(&self) -> impl IntoElement {
         let palette = self.palette;
         div()
-            .px_4()
+            .px(px(layout::PAGE_PADDING))
             .py_2()
             .bg(rgb(palette.header))
             .text_size(px(12.0))

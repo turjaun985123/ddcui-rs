@@ -14,7 +14,11 @@ pub const WINDOW_MIN_WIDTH: f32 = 600.0;
 pub const WINDOW_MIN_HEIGHT: f32 = 460.0;
 
 /// Space between the window edge and the cards.
-pub const PAGE_PADDING: f32 = 16.0;
+///
+/// The window is exactly one card plus two of these, so the cards are centred
+/// with no slack on either side. That is what lets a click's position in the
+/// window be turned into a bar position by arithmetic.
+pub const PAGE_PADDING: f32 = (WINDOW_WIDTH - CARD_WIDTH) / 2.0;
 
 /// Width of one monitor card, outline and padding included.
 pub const CARD_WIDTH: f32 = 560.0;
@@ -63,8 +67,10 @@ pub fn tick_offset(index: usize) -> f32 {
 
 // A card has to fit inside the smallest window the window manager allows,
 // otherwise the click arithmetic above would be wrong about where the bars are.
+// The default window fits one card and two page paddings exactly, so the cards
+// are centred when it opens.
 const _: () = assert!(TRACK_LEFT + TRACK_WIDTH <= WINDOW_MIN_WIDTH);
-const _: () = assert!(CARD_WIDTH + 2.0 * PAGE_PADDING <= WINDOW_WIDTH);
+const _: () = assert!(CARD_WIDTH + 2.0 * PAGE_PADDING == WINDOW_WIDTH);
 
 #[cfg(test)]
 mod tests {
