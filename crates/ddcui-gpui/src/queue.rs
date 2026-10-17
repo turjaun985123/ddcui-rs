@@ -33,9 +33,13 @@ impl WriteQueue {
     /// Returns whether an earlier write was replaced. Either way the newest
     /// value wins, and rows keep their relative order so one busy monitor
     /// cannot starve another.
-    pub fn push(&mut self, job: WriteJob) -> bool {
+    pub fn push(&mut self, mut job: WriteJob) -> bool {
         for slot in self.jobs.iter_mut() {
             if slot.key == job.key && slot.feature == job.feature {
+                // Keep the rollback point from before this queued run of
+                // coalesced values. The worker updates it after the in-flight
+                // write completes, when the confirmed monitor value is known.
+                job.previous = slot.previous;
                 *slot = job;
                 return true;
             }
@@ -50,6 +54,24 @@ impl WriteQueue {
             return None;
         }
         Some(self.jobs.remove(0))
+    }
+
+    /// Whether a newer value for this row is waiting behind an in-flight write.
+    pub fn contains(&self, key: &str, feature: usize) -> bool {
+        self.jobs
+            .iter()
+            .any(|job| job.key == key && job.feature == feature)
+    }
+
+    /// Update the rollback point for a queued row after its earlier write ends.
+    pub fn set_previous(&mut self, key: &str, feature: usize, previous: u16) {
+        if let Some(job) = self
+            .jobs
+            .iter_mut()
+            .find(|job| job.key == key && job.feature == feature)
+        {
+            job.previous = previous;
+        }
     }
 }
 

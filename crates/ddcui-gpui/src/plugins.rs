@@ -623,7 +623,7 @@ fn enabled_list() -> Option<Vec<String>> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(single_quoted_items(&text))
+    single_quoted_items(&text)
 }
 
 /// Render a list the way `gsettings` expects, with GVariant escaping.
@@ -653,31 +653,81 @@ fn quoted_one(item: &str) -> String {
     out
 }
 
-/// Pull the single quoted strings out of `gsettings` output.
-fn single_quoted_items(text: &str) -> Vec<String> {
+/// Parse the string-array form printed by `gsettings get`.
+///
+/// This intentionally accepts only the small GVariant subset used for
+/// extension UUIDs. If the output is unfamiliar, callers must leave the
+/// setting untouched instead of treating a parse failure as an empty list.
+fn single_quoted_items(text: &str) -> Option<Vec<String>> {
     let mut items = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let mut index = 0;
-
-    while index < chars.len() {
-        if chars[index] != '\'' {
-            index += 1;
-            continue;
-        }
-        index += 1;
-
-        let mut item = String::new();
-        while index < chars.len() && chars[index] != '\'' {
-            if chars[index] == '\\' && index + 1 < chars.len() {
-                index += 1;
-            }
-            item.push(chars[index]);
-            index += 1;
-        }
-        index += 1;
-        items.push(item);
+    skip_space(&chars, &mut index);
+    if chars.get(index..index + 4) == Some(&['@', 'a', 's', ' ']) {
+        index += 4;
+        skip_space(&chars, &mut index);
     }
-    items
+    if chars.get(index) != Some(&'[') {
+        return None;
+    }
+    index += 1;
+    skip_space(&chars, &mut index);
+    if chars.get(index) == Some(&']') {
+        index += 1;
+        skip_space(&chars, &mut index);
+        return (index == chars.len()).then_some(items);
+    }
+
+    loop {
+        if chars.get(index) != Some(&'\'') {
+            return None;
+        }
+        index += 1;
+        let mut item = String::new();
+        let mut closed = false;
+        while index < chars.len() {
+            match chars[index] {
+                '\'' => {
+                    index += 1;
+                    closed = true;
+                    break;
+                }
+                '\\' => {
+                    index += 1;
+                    let escaped = *chars.get(index)?;
+                    if !matches!(escaped, '\\' | '\'') {
+                        return None;
+                    }
+                    item.push(escaped);
+                }
+                ch => item.push(ch),
+            }
+            index += 1;
+        }
+        if !closed {
+            return None;
+        }
+        items.push(item);
+        skip_space(&chars, &mut index);
+        match chars.get(index) {
+            Some(',') => {
+                index += 1;
+                skip_space(&chars, &mut index);
+            }
+            Some(']') => {
+                index += 1;
+                skip_space(&chars, &mut index);
+                return (index == chars.len()).then_some(items);
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn skip_space(chars: &[char], index: &mut usize) {
+    while chars.get(*index).is_some_and(|ch| ch.is_whitespace()) {
+        *index += 1;
+    }
 }
 
 /// A note to print after a successful install, when one is needed.
@@ -971,19 +1021,19 @@ mod tests {
     #[test]
     fn gsettings_lists_survive_a_round_trip() {
         let text = "['ding@rastersoft.com', 'ubuntu-dock@ubuntu.com']";
-        let items = single_quoted_items(text);
+        let items = single_quoted_items(text).unwrap();
         assert_eq!(items, vec!["ding@rastersoft.com", "ubuntu-dock@ubuntu.com"]);
         assert_eq!(format!("[{}]", quoted(&items)), text);
 
         let mut ours = items.clone();
         ours.push("ddcui-rs@jerinshop7-maker".to_string());
         let rendered = format!("[{}]", quoted(&ours));
-        assert_eq!(single_quoted_items(&rendered), ours);
+        assert_eq!(single_quoted_items(&rendered), Some(ours));
 
         // Odd entries keep their contents, and the list is not lost.
         let odd = vec!["quote'here".to_string(), "back\\slash".to_string()];
         let rendered = format!("[{}]", quoted(&odd));
-        assert_eq!(single_quoted_items(&rendered), odd);
+        assert_eq!(single_quoted_items(&rendered), Some(odd));
     }
 
     #[test]

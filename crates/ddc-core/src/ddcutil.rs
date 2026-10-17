@@ -4,6 +4,7 @@
 //! the process boundary explicit so the core crate stays free of native
 //! dependencies and is easy to test.
 
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -21,6 +22,8 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often a running command is checked for completion.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// Maximum stdout or stderr retained from one backend invocation.
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// Backend that drives the external `ddcutil` executable.
 #[derive(Debug, Clone)]
@@ -73,25 +76,50 @@ impl DdcutilCli {
                 _ => DdcError::Io(err),
             })?;
 
+        // Drain both pipes while the process runs. Waiting before reading can
+        // deadlock when ddcutil fills either OS pipe buffer with diagnostics.
+        let mut stdout = child.stdout.take().expect("stdout was piped");
+        let mut stderr = child.stderr.take().expect("stderr was piped");
+        let stdout_reader = std::thread::spawn(move || read_bounded(&mut stdout));
+        let stderr_reader = std::thread::spawn(move || read_bounded(&mut stderr));
+
         let deadline = Instant::now() + self.timeout;
-        loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Err(DdcError::Timeout(self.timeout));
                 }
-                Err(err) => return Err(DdcError::Io(err)),
+                Err(err) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return Err(DdcError::Io(err));
+                }
             }
-        }
+        };
 
-        let output = child.wait_with_output().map_err(DdcError::Io)?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let (stdout, stdout_truncated) = stdout_reader
+            .join()
+            .map_err(|_| DdcError::Parse("stdout reader thread panicked".to_string()))?
+            .map_err(DdcError::Io)?;
+        let (stderr, stderr_truncated) = stderr_reader
+            .join()
+            .map_err(|_| DdcError::Parse("stderr reader thread panicked".to_string()))?
+            .map_err(DdcError::Io)?;
+        if !status.success() {
+            let mut stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+            if stderr_truncated {
+                stderr.push_str(" [output truncated]");
+            }
             return Err(DdcError::Command {
-                status: output.status.code(),
+                status: status.code(),
                 stderr: if stderr.is_empty() {
                     "the command printed nothing on stderr".to_string()
                 } else {
@@ -99,8 +127,13 @@ impl DdcutilCli {
                 },
             });
         }
+        if stdout_truncated {
+            return Err(DdcError::Parse(format!(
+                "ddcutil stdout exceeded {MAX_OUTPUT_BYTES} bytes"
+            )));
+        }
 
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
 
     /// Whether `program` exists and can be executed.
@@ -112,6 +145,24 @@ impl DdcutilCli {
             std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
         })
     }
+}
+
+/// Drain a child pipe while retaining only a bounded amount of output.
+fn read_bounded(reader: &mut impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(8192);
+    let mut buffer = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = MAX_OUTPUT_BYTES.saturating_sub(output.len());
+        let keep = remaining.min(count);
+        output.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    Ok((output, truncated))
 }
 
 impl DdcBackend for DdcutilCli {

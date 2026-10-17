@@ -109,6 +109,8 @@ struct AppState {
     queue: WriteQueue,
     /// Invalidates older refreshes when the user requests a newer one.
     refresh_generation: u64,
+    /// Detects writes that begin or finish while a refresh is reading hardware.
+    write_generation: u64,
     /// The write the worker is running right now.
     in_flight: Option<WriteJob>,
     /// The colours of the window.
@@ -118,7 +120,7 @@ struct AppState {
 impl AppState {
     fn new(backend: Arc<dyn DdcBackend>, notice: Option<String>, palette: Palette) -> Self {
         let (profiles, problem) = load_profiles();
-        let state = Self {
+        Self {
             backend,
             monitors: Vec::new(),
             profiles,
@@ -128,10 +130,10 @@ impl AppState {
             stale: false,
             queue: WriteQueue::default(),
             refresh_generation: 0,
+            write_generation: 0,
             in_flight: None,
             palette,
-        };
-        state
+        }
     }
 
     /// Re-detect monitors and re-read every feature.
@@ -142,6 +144,7 @@ impl AppState {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_generation = self.refresh_generation.wrapping_add(1);
         let generation = self.refresh_generation;
+        let write_generation = self.write_generation;
         let backend = self.backend.clone();
         if self.monitors.is_empty() {
             self.status = format!("{} backend: refreshing monitors…", backend.name());
@@ -182,7 +185,12 @@ impl AppState {
                         state.stale = false;
                         state.status = format!("{} backend: no DDC/CI monitors found. Is a monitor connected and is DDC/CI enabled in its menu?", state.backend.name());
                     }
-                    Ok(monitors) => {
+                    Ok(mut monitors) => {
+                        merge_pending_features(
+                            &mut monitors,
+                            &state.monitors,
+                            state.write_generation != write_generation,
+                        );
                         state.monitors = monitors;
                         state.stale = false;
                         state.status = format!("{} backend: {} monitor(s).", state.backend.name(), state.monitors.len());
@@ -274,6 +282,7 @@ impl AppState {
             row_feature.failed = false;
             (previous, key)
         };
+        self.write_generation = self.write_generation.wrapping_add(1);
 
         let job = WriteJob {
             key,
@@ -338,6 +347,7 @@ impl AppState {
         outcome: Result<(), DdcError>,
         cx: &mut Context<Self>,
     ) {
+        self.write_generation = self.write_generation.wrapping_add(1);
         let Some(index) = self.monitor_index(&job.key) else {
             self.status = match &outcome {
                 Ok(()) => format!(
@@ -361,23 +371,46 @@ impl AppState {
             .map(|feature| feature.value.code.name().to_string())
             .unwrap_or_else(|| "feature".to_string());
 
+        let newer_write_waiting = self.queue.contains(&job.key, job.feature);
+        if newer_write_waiting {
+            self.queue.set_previous(
+                &job.key,
+                job.feature,
+                if outcome.is_ok() {
+                    target
+                } else {
+                    job.previous
+                },
+            );
+        }
         if let Some(feature) = self.monitors[index].features.get_mut(job.feature) {
-            feature.pending = false;
-            match &outcome {
-                Ok(()) => {
-                    feature.value.current = target;
-                    feature.failed = false;
-                }
-                Err(_) => {
-                    feature.value.current = job.previous;
-                    feature.failed = true;
+            if newer_write_waiting {
+                // Keep the latest requested value visible until its queued
+                // write finishes. Rolling back here would hide that intent.
+                feature.pending = true;
+                feature.failed = false;
+            } else {
+                feature.pending = false;
+                match &outcome {
+                    Ok(()) => {
+                        feature.value.current = target;
+                        feature.failed = false;
+                    }
+                    Err(_) => {
+                        feature.value.current = job.previous;
+                        feature.failed = true;
+                    }
                 }
             }
         }
 
-        self.status = match &outcome {
-            Ok(()) => format!("{label}: {name} set to {}%", job.percent),
-            Err(err) => format!("{label}: {name} failed: {err}"),
+        self.status = if newer_write_waiting {
+            format!("{label}: {name} has a newer value queued")
+        } else {
+            match &outcome {
+                Ok(()) => format!("{label}: {name} set to {}%", job.percent),
+                Err(err) => format!("{label}: {name} failed: {err}"),
+            }
         };
 
         self.in_flight = None;
@@ -470,6 +503,34 @@ impl AppState {
                 self.status = format!("Deleted preset {label}");
             }
             Err(err) => self.status = format!("Could not delete preset {label}: {err}"),
+        }
+    }
+}
+
+/// Keep local write state newer than any reads that overlapped a refresh.
+fn merge_pending_features(
+    refreshed: &mut [MonitorRow],
+    current: &[MonitorRow],
+    preserve_recent_writes: bool,
+) {
+    for monitor in refreshed {
+        let Some(previous) = current.iter().find(|row| row.key == monitor.key) else {
+            continue;
+        };
+        for feature in &mut monitor.features {
+            let Some(previous_feature) = previous
+                .features
+                .iter()
+                .find(|row| row.value.code == feature.value.code)
+            else {
+                continue;
+            };
+            if preserve_recent_writes || previous_feature.pending {
+                feature.value = previous_feature.value;
+                feature.supported = previous_feature.supported;
+                feature.pending = previous_feature.pending;
+                feature.failed = previous_feature.failed;
+            }
         }
     }
 }

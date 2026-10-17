@@ -138,6 +138,9 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let Some(mut command) = command else {
         return Ok(Command::Gui { theme });
     };
+    if display.is_some() && !matches!(command, Command::Get { .. } | Command::Set { .. }) {
+        return Err("--display only applies to --get-* and --set-* commands".to_string());
+    }
     if theme.is_some() {
         return Err(
             "--theme only applies to the window; it cannot be combined with a command".to_string(),
