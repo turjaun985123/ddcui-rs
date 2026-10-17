@@ -52,8 +52,12 @@ hardware.
 
 ## Port roadmap
 
-1. **Core** — monitor discovery, VCP read/write, capabilities. *(this crate)*
-2. **Brightness/contrast UI** in GPUI. *(this crate)*
-3. Native I2C backend behind `DdcBackend`.
-4. Remaining feature widgets (input source, colour gains, ...) and dialogs.
-5. Packaging (`.desktop`, metainfo, icons) mirrored from upstream.
+1. **Core** — monitor discovery and VCP read/write over the `ddcutil` CLI. *(done)*
+2. **Brightness/contrast UI** in GPUI: one card per monitor with level bars,
+   quick-set buttons, presets, and light/dark themes. *(done)*
+3. **Packaging and desktop integration** — `.desktop`, metainfo, icons, the GNOME
+   Quick Settings plugin, and tarball / AppImage / `.deb` releases. *(done)*
+4. **Per-monitor profiles** keyed to the monitor's own identity, profile
+   import/export, and a diagnostics export. *(next)*
+5. Remaining feature widgets (input source, colour gains, ...) and dialogs.
+6. **Native I2C backend** behind `DdcBackend`, replacing the `ddcutil` subprocess.

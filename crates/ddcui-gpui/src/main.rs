@@ -493,6 +493,8 @@ impl Render for AppState {
                     .flex_1()
                     .gap_3()
                     .p_4()
+                    // Scrolling needs a stateful element, so the list gets an id.
+                    .id("monitor-cards")
                     .overflow_y_scroll()
                     .scrollbar_width(px(8.0))
                     .children(monitors)
